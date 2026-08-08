@@ -3,6 +3,7 @@ import time
 from typing import Callable
 
 import cv2
+import traceback
 
 
 class CameraCapture(threading.Thread):
@@ -31,8 +32,14 @@ class CameraCapture(threading.Thread):
 
             try:
                 self.frame_callback(self.camera_id, frame)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Log the exception so camera failures are visible instead of silently swallowed
+                try:
+                    print(f"[{self.camera_id}] frame processing error: {exc}")
+                    traceback.print_exc()
+                except Exception:
+                    # Best-effort logging; never allow logging to raise
+                    pass
 
         self._release_capture()
 
