@@ -1,0 +1,13 @@
+# Python cache and environment artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+myenv/
+*.sqlite3
+*.log
+*.csv
+.DS_Store

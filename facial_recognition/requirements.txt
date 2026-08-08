@@ -1,0 +1,5 @@
+opencv-python==5.0.0.93
+numpy==2.5.1
+PyYAML==6.0.3
+insightface==1.0.1
+onnxruntime==1.28.0
