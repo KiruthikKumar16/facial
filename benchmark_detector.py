@@ -1,10 +1,9 @@
 """Small benchmark to measure detector timings without camera input.
-Run: .\myenv\Scripts\python.exe benchmark_detector.py
+Run: myenv/Scripts/python.exe benchmark_detector.py
 """
 import logging
 import time
 import numpy as np
-from pathlib import Path
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger('benchmark')
@@ -21,7 +20,7 @@ def main():
     for i in range(2):
         _ = det.detect(img)
 
-    times = []
+    times: list[float] = []
     for i in range(10):
         t0 = time.perf_counter()
         res = det.detect(img)
@@ -29,7 +28,8 @@ def main():
         times.append(dt)
         logger.info('iter %d: detected %d faces, time=%.2f ms', i, len(res), dt)
 
-    logger.info('median time %.2f ms, mean %.2f ms', float(np.median(times)), float(np.mean(times)))
+    times_arr = np.asarray(times, dtype=np.float64)
+    logger.info('median time %.2f ms, mean %.2f ms', float(np.median(times_arr)), float(np.mean(times_arr)))
 
 if __name__ == '__main__':
     main()

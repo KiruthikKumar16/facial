@@ -7,7 +7,7 @@ Shows each pending item, opens the image, prompts for a name (or empty to skip),
 and if named moves the image into `known_faces/<name>/` and appends embedding to gallery.
 """
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 import numpy as np
 import cv2
 
