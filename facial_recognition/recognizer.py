@@ -1,6 +1,11 @@
 import os
+import time
+import logging
 
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
 
 
 class Recognizer:
@@ -28,7 +33,9 @@ class Recognizer:
             self.embeddings = np.zeros((0, 512), dtype=np.float32)
 
     def recognize(self, embedding: np.ndarray) -> tuple[str, float]:
+        start = time.perf_counter()
         if self.embeddings.shape[0] == 0:
+            logger.debug('No gallery embeddings available')
             return 'Unknown', 0.0
 
         similarities = np.dot(self.embeddings, embedding) / (
@@ -36,6 +43,8 @@ class Recognizer:
         )
         best_index = int(np.argmax(similarities))
         best_score = float(similarities[best_index])
+        dur = (time.perf_counter() - start) * 1000.0
+        logger.debug('Recognize took %.2f ms, best_score=%.4f, index=%d', dur, best_score, best_index)
         if best_score >= self.threshold and best_index < len(self.labels):
             return self.labels[best_index], best_score
         return 'Unknown', best_score

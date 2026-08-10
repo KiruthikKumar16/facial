@@ -13,6 +13,7 @@ import signal
 import threading
 import time
 from typing import Any, Deque, Dict, List, Optional, Tuple, cast
+import logging
 
 # bind thread limits early to help native libs
 os.environ.setdefault('OMP_NUM_THREADS', os.environ.get('OMP_NUM_THREADS', '4'))
@@ -24,6 +25,9 @@ import yaml  # type: ignore[reportMissingTypeStubs]
 
 cv2: Any = cv2
 yaml: Any = yaml
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 from capture import CameraCapture
 from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
@@ -74,9 +78,11 @@ class CpuCameraPipeline:
         self.fps = 0.0
 
     def start(self):
+        logger.info('Starting CameraPipeline %s (source=%s)', self.camera_id, self.source)
         self.capture.start()
 
     def stop(self):
+        logger.info('Stopping CameraPipeline %s', self.camera_id)
         self.capture.stop()
         self.capture.join(timeout=5)
 
@@ -139,6 +145,7 @@ class CpuCameraPipeline:
         return True
 
     def process_frame(self, camera_id: str, frame: Any) -> None:
+        logger.debug('[%s] process_frame start (frame_count=%d)', self.camera_id, self._frame_count)
         # update FPS using arrival times
         now = time.time()
         if self.last_fps_time is not None:
@@ -225,7 +232,10 @@ class CpuCameraPipeline:
 
         # Resize once for inference
         small: Any = cv2.resize(frame, self.frame_size, interpolation=cv2.INTER_LINEAR)
+        det_start = time.perf_counter()
         detections: List[Dict[str, Any]] = cast(List[Dict[str, Any]], self.detector.detect(small))
+        det_dur = (time.perf_counter() - det_start) * 1000.0
+        logger.debug('[%s] detection pass took %.2f ms, results=%d', self.camera_id, det_dur, len(detections))
 
         annotated: Any = frame.copy()
         # annotate detections (scale boxes)

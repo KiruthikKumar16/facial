@@ -6,9 +6,13 @@ from typing import Any, Dict, List, Tuple, cast
 
 import cv2
 import yaml
+import logging
 
 cv2: Any = cv2
 yaml: Any = yaml
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 from capture import CameraCapture
 from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
@@ -31,9 +35,11 @@ class CameraPipeline:
         self.capture = CameraCapture(source, camera_id, self.process_frame, reconnect_interval=10)
 
     def start(self) -> None:
+        logger.info('Starting CameraPipeline %s (source=%s)', self.camera_id, self.source)
         self.capture.start()
 
     def stop(self) -> None:
+        logger.info('Stopping CameraPipeline %s', self.camera_id)
         self.capture.stop()
         self.capture.join(timeout=5)
 
@@ -118,7 +124,7 @@ def main() -> None:
 
     detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(frame_width, frame_height)))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
-    logger = DetectionLogger(log_path=log_path)
+    det_logger = DetectionLogger(log_path=log_path)
 
     camera_pipelines: List[Any] = []
     for camera_id, source in build_camera_sources(config):
@@ -127,7 +133,7 @@ def main() -> None:
             source=source,
             detector=detector,
             recognizer=recognizer,
-            logger=logger,
+            logger=det_logger,
             frame_size=(frame_width, frame_height),
         )
         pipeline.capture.reconnect_interval = reconnect_interval
@@ -145,6 +151,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
 
     try:
+        logger.info('Starting main loop, pipelines=%d', len(camera_pipelines))
         while not stop_event.is_set():
             for pipeline in camera_pipelines:
                 frame = pipeline.get_frame()
@@ -155,7 +162,7 @@ def main() -> None:
     finally:
         for pipeline in camera_pipelines:
             pipeline.stop()
-        logger.close()
+        det_logger.close()
         cv2.destroyAllWindows()
 
 
