@@ -21,6 +21,7 @@ os.environ.setdefault('MKL_NUM_THREADS', os.environ.get('MKL_NUM_THREADS', '4'))
 os.environ.setdefault('OPENBLAS_NUM_THREADS', os.environ.get('OPENBLAS_NUM_THREADS', '4'))
 
 import cv2  # type: ignore[reportMissingTypeStubs]
+import numpy as np
 import yaml  # type: ignore[reportMissingTypeStubs]
 
 cv2: Any = cv2
@@ -33,6 +34,7 @@ from capture import CameraCapture
 from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
 from logger import DetectionLogger
 from recognizer import Recognizer
+from pending import PendingSaver
 from collections import deque
 
 
@@ -48,12 +50,14 @@ class CpuCameraPipeline:
         frame_skip: int = 2,
         recognition_interval: int = 4,
         use_tracker: bool = True,
+        pending_saver: Optional[PendingSaver] = None,
     ) -> None:
         self.camera_id = camera_id
         self.source = source
         self.detector = detector
         self.recognizer = recognizer
         self.logger = logger
+        self.pending_saver = pending_saver
         self.frame_size = frame_size
         self.frame_skip = max(1, int(frame_skip))
         self.recognition_interval = max(1, int(recognition_interval))
@@ -267,6 +271,13 @@ class CpuCameraPipeline:
             # keep light logging
             if self.logger is not None:
                 self.logger.log_detection(camera_id, [l, t, r, b], identity, float(score))
+            if identity == 'Unknown' and self.pending_saver is not None:
+                try:
+                    cropped = frame[t:b, l:r].copy()
+                    emb_arr = np.asarray(emb, dtype=np.float32)
+                    self.pending_saver.save(emb_arr, cropped)
+                except Exception:
+                    pass
             # store scaled bbox+label for redraw on skipped frames
             self.last_detections.append({'bbox': (l, t, r, b), 'label': label, 'score': float(score)})
 
@@ -337,6 +348,7 @@ def main():
     detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
     logger = DetectionLogger(log_path=log_path)
+    pending_saver = PendingSaver()
 
     rec_interval = int(cfg.get('cpu_recognition_interval', 2))
     pipelines: List[CpuCameraPipeline] = []
@@ -350,6 +362,7 @@ def main():
             frame_size=(det_w, det_h),
             frame_skip=frame_skip,
             recognition_interval=rec_interval,
+            pending_saver=pending_saver,
         )
         pipelines.append(p)
 
