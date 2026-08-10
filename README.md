@@ -1,126 +1,119 @@
 # Multi-Camera Face Detection and Recognition
 
-This repository performs real-time face detection and recognition across a laptop webcam and one or more CCTV cameras accessed via RTSP.
+**summary**
 
-## Features
-- Detects and recognizes faces from multiple camera sources simultaneously
-- Uses one thread per camera stream to avoid blocking slow or disconnected feeds
-- Uses InsightFace SCRFD and ArcFace embeddings for detection and recognition
-- Supports CPU and optional GPU inference backends
-- Stores enrollments in a serialized gallery and labels detected faces with name + confidence
-- Falls back to `Unknown` when no enrolled identity matches the configured threshold
-- Saves unknown face crops to `pending/` for offline review and enrollment
-- Logs every detection event to `detections.csv`
+Multi-Camera Face Detection and Recognition — a lightweight real-time system that detects faces from multiple camera sources and recognizes enrolled identities, saving unknowns for offline review.
 
-## Requirements
+**Overview**
 
-- Python 3.10+
-- `opencv-python`
-- `numpy`
-- `PyYAML`
-- `insightface`
-- `onnxruntime`
+This repository implements a multi-threaded face detection and recognition pipeline using InsightFace/ArcFace embeddings and OpenCV. It targets developers and researchers who need a self-hosted, extensible solution for labeling and reviewing faces from webcams and RTSP camera feeds, with an offline pending-review workflow for unknown detections.
 
-Install dependencies:
+**Key Features**
+
+- Real-time face detection and recognition from multiple camera sources (webcam + RTSP)
+- Thread-per-camera architecture to avoid blocking slow feeds
+- InsightFace SCRFD detector and ArcFace embeddings (ONNX runtime) for robust recognition
+- CPU-optimized runner (`main_cpu.py`) with frame skipping and a faster detector option
+- Offline `pending/` workflow: save unknown crops + embeddings for manual review via `review_pending.py`
+- Duplicate suppression when saving pending unknowns (one representative per repeated unknown)
+- Enrollment tooling (`enroll.py`) that builds a serialized `gallery.npz` used by the recognizer
+- Event logging to `detections.csv` for auditing and downstream processing
+
+**Tech Stack**
+
+- Language: Python 3.10+ (tested on 3.14 in this workspace)
+- Libraries: OpenCV (`opencv-python`), NumPy, PyYAML, InsightFace, ONNX Runtime (`onnxruntime`)
+- Optional GPU: `onnxruntime-gpu` for GPU inference
+- Runtime: Local processes (no external cloud dependencies)
+
+**Architecture**
+
+The system uses separate components:
+
+- Capture: each camera runs in its own thread and yields frames to the pipeline.
+- Detector: SCRFD (InsightFace) or a fallback OpenCV cascade detects face bounding boxes.
+- Recognizer: extracts ArcFace embeddings and compares cosine similarity against enrolled embeddings in `gallery.npz`.
+- Pending saver: when no match meets the configured threshold, a crop + embedding is saved under `pending/` for offline review; duplicate suppression avoids repeated saves of the same unknown.
+- Review CLI: `review_pending.py` loads pending samples, suggests similar names, and can append approved faces to `known_faces/` and the gallery.
+
+Data flow: camera -> detector -> embedder -> matcher -> (recognized | save pending) -> log event
+
+**Architecture Diagram**
+
+```mermaid
+flowchart LR
+	Camera[Camera (webcam / RTSP)] -->|frames| Capture[Capture Thread]
+	Capture --> Detector[Detector (SCRFD / Cascade)]
+	Detector --> Embedder[Embedder (ArcFace / ONNX)]
+	Embedder --> Matcher[Matcher (cosine similarity vs gallery.npz)]
+	Matcher -->|match| Recognized[Recognized: label + confidence]
+	Matcher -->|no match| Pending[Save pending crop + embedding]
+	Pending --> Reviewer[Offline Review CLI (review_pending.py)]
+	Recognized --> Logger[Log event -> detections.csv]
+	Pending --> Logger
+	Reviewer -->|approve| Enrollment[Enroll into known_faces/ + append to gallery]
+	Enrollment --> Matcher
+```
+
+**What I Built**
+
+- Implemented the threaded camera capture and detection pipeline.
+- Integrated InsightFace detection and ArcFace embedding extraction via ONNX Runtime.
+- Built the `pending/` offline workflow with duplicate suppression and `review_pending.py` for manual enrollment.
+- Added `main_cpu.py` for constrained CPU environments with frame skipping and a faster detector option.
+- Updated repository hygiene: added `known_faces/` and `pending/` to `.gitignore` and removed local face data from tracking.
+
+**Challenges & Solutions**
+
+- Duplicate pending saves: repeated unknown detections created many files; solved by embedding-based duplicate suppression in `pending.py` to save only one representative per similar unknown.
+- Windows file handle errors during pending review deletion: fixed by ensuring file reads use context managers and files are closed before removal.
+- Sensitive local data tracked in git: updated `.gitignore` and removed `known_faces/` and `pending/` from the git index to avoid committing local face images.
+
+**Impact**
+
+- Reduced pending-file duplication from repeated detections to a single representative per unknown (practical storage reduction).
+- Offline review workflow accelerates manual enrollment and reduces false enrollments.
+- Cleaner repository with local enrollment files excluded from version control.
+
+**Setup**
+
+Requirements are listed in `requirements.txt`. Typical setup:
 
 ```bash
+python -m venv myenv
+source myenv/bin/activate   # (Linux/macOS)
+myenv\\Scripts\\activate    # (Windows PowerShell)
 pip install -r requirements.txt
 ```
 
-For GPU inference, install `onnxruntime-gpu` instead of `onnxruntime`:
-
-```bash
-pip install onnxruntime-gpu==1.28.0
-```
-
-## Quick Start
-
-1. Configure your camera sources in `config.yaml`.
-2. Add one folder per person under `known_faces/` with face images.
-3. Build the gallery:
+Build the gallery after populating `known_faces/`:
 
 ```bash
 python enroll.py
 ```
 
-4. Run the standard pipeline:
+Run the app (standard runner):
 
 ```bash
 python main.py
 ```
 
-5. Or run the CPU-optimized pipeline:
+CPU-optimized runner:
 
 ```bash
 python main_cpu.py
 ```
 
-## Configuration
-
-Edit `config.yaml` to configure cameras and runtime behavior.
-
-Key settings:
-- `webcam_index`: local webcam index
-- `rtsp_urls`: list of RTSP stream URLs for IP/CCTV cameras
-- `similarity_threshold`: cosine similarity threshold for identity matching
-- `use_gpu`: set to `true` to use GPU backend with `onnxruntime-gpu`
-- `inference_frame_width` / `inference_frame_height`: model input size for inference
-- `cpu_inference_frame_width` / `cpu_inference_frame_height`: CPU-optimized model input size
-- `cpu_frame_skip`: process every Nth frame on CPU runner
-- `cpu_recognition_interval`: recognize faces only every Nth processed frame on CPU runner
-- `cpu_use_fast_detector`: use smaller/faster detector model for CPU-only mode
-- `cpu_detector_model`: detector model name for CPU-only mode
-- `known_faces_dir`: directory containing enrolled identities
-- `gallery_path`: saved recognition gallery file
-- `log_file`: CSV log path
-- `reconnect_interval_seconds`: seconds to wait before retrying a disconnected camera
-
-## Enroll Known Faces
-
-Populate `known_faces/` with one folder per person, and place face images inside each folder:
-
-```text
-known_faces/
-  Alice/
-    alice-1.jpg
-    alice-2.jpg
-  Bob/
-    bob.jpg
-```
-
-Then run:
-
-```bash
-python enroll.py
-```
-
-This builds the gallery file used by the recognition engine.
-
-## Run the Application
-
-For the standard pipeline:
-
-```bash
-python main.py
-```
-
-For a CPU-optimized runner with frame skipping and tracker fallback:
-
-```bash
-python main_cpu.py
-```
-Unknown faces are saved automatically under `pending/` when the system cannot match a detection.
-
-To review and enroll those pending unknown faces later:
+Review pending unknowns:
 
 ```bash
 python review_pending.py
 ```
-Press `q` in any display window or use `Ctrl+C` to exit.
 
-## Notes
+Notes:
+- `known_faces/` and `pending/` are local-only directories and are excluded from version control by `.gitignore`.
 
-- If the gallery file is missing or empty, detections are still shown and labeled `Unknown`.
-- Each camera runs in its own thread, so one slow stream does not block the others.
-- Camera reconnects are retried at the interval configured by `reconnect_interval_seconds`.
-- `main_cpu.py` is tuned for CPU-only environments and disables GPU usage.
+**Links**
+
+- Issues / Feature requests: open a GitHub issue
+
