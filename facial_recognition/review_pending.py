@@ -8,7 +8,6 @@ and if named moves the image into `known_faces/<name>/` and appends embedding to
 """
 from pathlib import Path
 from typing import List
-import shutil
 import numpy as np
 import cv2
 
@@ -47,29 +46,30 @@ def review() -> None:
         return
 
     for item in items:
-        data = np.load(item, allow_pickle=True)
-        img = data['image']
-        emb = data['embedding']
+        with np.load(item, allow_pickle=True) as data:
+            img = data['image']
+            emb = data['embedding']
 
-        win = 'review'
-        cv2.imshow(win, img)
-        print(f'Reviewing {item.name} — press any key in image window to continue, then enter name (empty=skip):')
-        cv2.waitKey(0)
-        cv2.destroyWindow(win)
-        name = input('Enter name (or leave empty to skip): ').strip()
-        if not name:
-            print('Skipped')
-            continue
+            win = 'review'
+            cv2.imshow(win, img)
+            print(f'Reviewing {item.name} — press any key in image window to continue, then enter name (empty=skip):')
+            cv2.waitKey(0)
+            cv2.destroyWindow(win)
+            name = input('Enter name (or leave empty to skip): ').strip()
+            if not name:
+                print('Skipped')
+                continue
 
-        # ensure known dir exists
-        person_dir = KNOWN_DIR / name
-        person_dir.mkdir(parents=True, exist_ok=True)
-        # save image into person dir
-        outimg = person_dir / f'{item.stem}.png'
-        cv2.imwrite(str(outimg), img)
-        # append embedding to gallery
-        append_to_gallery(name, emb)
-        # remove pending file
+            # ensure known dir exists
+            person_dir = KNOWN_DIR / name
+            person_dir.mkdir(parents=True, exist_ok=True)
+            # save image into person dir
+            outimg = person_dir / f'{item.stem}.png'
+            cv2.imwrite(str(outimg), img)
+            # append embedding to gallery
+            append_to_gallery(name, emb)
+
+        # remove pending file after closing
         item.unlink()
         print(f'Added {name} and removed pending item {item.name}')
 
