@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420" viewBox="0 0 1000 420">
+  <style>
+    .box { fill:#ffffff; stroke:#2b6cb0; stroke-width:2; rx:8; ry:8 }
+    .text { font-family: Arial, Helvetica, sans-serif; font-size:14px; fill:#1a202c }
+    .title { font-weight:700; font-size:13px }
+    .arrow { stroke:#4a5568; stroke-width:2; fill:none; marker-end:url(#arrowhead) }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4a5568" />
+    </marker>
+  </defs>
+
+  <!-- Boxes -->
+  <rect x="20" y="30" width="160" height="60" class="box"/>
+  <text x="100" y="60" class="text" text-anchor="middle">Camera (webcam / RTSP)</text>
+
+  <rect x="220" y="30" width="160" height="60" class="box"/>
+  <text x="300" y="60" class="text" text-anchor="middle">Capture Thread</text>
+
+  <rect x="420" y="30" width="160" height="60" class="box"/>
+  <text x="500" y="60" class="text" text-anchor="middle">Detector (SCRFD / Cascade)</text>
+
+  <rect x="620" y="30" width="160" height="60" class="box"/>
+  <text x="700" y="60" class="text" text-anchor="middle">Embedder (ArcFace / ONNX)</text>
+
+  <rect x="320" y="140" width="200" height="60" class="box"/>
+  <text x="420" y="170" class="text" text-anchor="middle">Matcher (cosine similarity vs gallery.npz)</text>
+
+  <rect x="620" y="140" width="200" height="60" class="box"/>
+  <text x="720" y="170" class="text" text-anchor="middle">Recognized<br/>label + confidence</text>
+
+  <rect x="20" y="240" width="220" height="60" class="box"/>
+  <text x="130" y="270" class="text" text-anchor="middle">Save pending crop + embedding</text>
+
+  <rect x="320" y="240" width="220" height="60" class="box"/>
+  <text x="430" y="270" class="text" text-anchor="middle">Review CLI (review_pending.py)</text>
+
+  <rect x="620" y="240" width="220" height="60" class="box"/>
+  <text x="730" y="270" class="text" text-anchor="middle">Log events (detections.csv)</text>
+
+  <!-- Arrows -->
+  <path class="arrow" d="M180 60 L220 60" />
+  <path class="arrow" d="M380 60 L420 60" />
+  <path class="arrow" d="M580 60 L620 60" />
+  <path class="arrow" d="M700 90 L420 140" />
+  <path class="arrow" d="M720 90 L820 160" />
+  <path class="arrow" d="M420 200 L420 240" />
+  <path class="arrow" d="M200 90 L200 240" />
+  <path class="arrow" d="M540 240 L620 240" />
+  <path class="arrow" d="M740 200 L740 240" />
+
+  <!-- Labels on arrows -->
+  <text x="240" y="50" class="text">frames</text>
+  <text x="640" y="110" class="text">match</text>
+  <text x="640" y="200" class="text">no match</text>
+
+</svg>

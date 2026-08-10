@@ -41,7 +41,6 @@ Data flow: camera -> detector -> embedder -> matcher -> (recognized | save pendi
 **Architecture Diagram**
 
 ```mermaid
-```mermaid
 flowchart LR
 	Camera["Camera (webcam / RTSP)"] -->|frames| Capture["Capture Thread"]
 	Capture --> Detector["Detector (SCRFD / Cascade)"]
@@ -55,7 +54,12 @@ flowchart LR
 	Reviewer -->|approve| Enrollment["Enroll into known_faces/ + append to gallery"]
 	Enrollment --> Matcher
 ```
-```
+
+**Fallback Diagram (SVG)**
+
+If your platform cannot render Mermaid diagrams, an SVG fallback is included below:
+
+![Architecture diagram](docs/architecture.svg)
 
 **What I Built**
 
