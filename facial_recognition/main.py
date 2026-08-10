@@ -18,15 +18,17 @@ from capture import CameraCapture
 from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
 from logger import DetectionLogger
 from recognizer import Recognizer
+from pending import PendingSaver
 
 
 class CameraPipeline:
-    def __init__(self, camera_id: str, source: str | int, detector: Any, recognizer: Recognizer, logger: DetectionLogger, frame_size: tuple[int, int]) -> None:
+    def __init__(self, camera_id: str, source: str | int, detector: Any, recognizer: Recognizer, logger: DetectionLogger, frame_size: tuple[int, int], pending_saver: PendingSaver | None = None) -> None:
         self.camera_id = camera_id
         self.source = source
         self.detector = detector
         self.recognizer = recognizer
         self.logger = logger
+        self.pending_saver = pending_saver
         self.frame_size = frame_size
         self.latest_frame = None
         self.latest_frame_lock = threading.Lock()
@@ -58,6 +60,21 @@ class CameraPipeline:
             embedding = face['embedding']
             identity, confidence = self.recognizer.recognize(embedding)
             self.logger.log_detection(camera_id, bbox, identity, confidence)
+            # if unknown, save to pending for user review
+            if identity == 'Unknown' and self.pending_saver is not None:
+                # bbox is in small_frame coordinates
+                left, top, right, bottom = bbox
+                left = max(int(left), 0)
+                top = max(int(top), 0)
+                right = max(int(right), 0)
+                bottom = max(int(bottom), 0)
+                try:
+                    face_img = small_frame[top:bottom, left:right].copy()
+                    emb_arr = np.asarray(embedding, dtype=np.float32)
+                    self.pending_saver.save(emb_arr, face_img)
+                except Exception:
+                    # don't let pending save errors disrupt pipeline
+                    pass
             self._annotate_frame(annotated_frame, bbox, identity, confidence, small_frame.shape[:2])
 
         self._draw_fps(annotated_frame)
