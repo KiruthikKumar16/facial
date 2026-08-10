@@ -9,6 +9,7 @@ This repository performs real-time face detection and recognition across a lapto
 - Supports CPU and optional GPU inference backends
 - Stores enrollments in a serialized gallery and labels detected faces with name + confidence
 - Falls back to `Unknown` when no enrolled identity matches the configured threshold
+- Saves unknown face crops to `pending/` for offline review and enrollment
 - Logs every detection event to `detections.csv`
 
 ## Requirements
@@ -108,7 +109,13 @@ For a CPU-optimized runner with frame skipping and tracker fallback:
 ```bash
 python main_cpu.py
 ```
+Unknown faces are saved automatically under `pending/` when the system cannot match a detection.
 
+To review and enroll those pending unknown faces later:
+
+```bash
+python review_pending.py
+```
 Press `q` in any display window or use `Ctrl+C` to exit.
 
 ## Notes
