@@ -1,11 +1,11 @@
 import os
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Any, cast, Dict, Iterable
 
 import cv2
 import numpy as np
-from insightface.app import FaceAnalysis
+from insightface.app import FaceAnalysis  # type: ignore[reportMissingTypeStubs]
 
 
 def find_image_files(folder_path: Path) -> Iterable[Path]:
@@ -20,7 +20,7 @@ def build_gallery(known_faces_dir: Path, gallery_path: Path, use_gpu: bool, det_
         raise FileNotFoundError(f'Known faces directory not found: {known_faces_dir}')
 
     providers = ['CUDAExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
-    app = FaceAnalysis(name='buffalo_l', providers=providers)
+    app: Any = cast(Any, FaceAnalysis(name='buffalo_l', providers=providers))
     app.prepare(ctx_id=0 if use_gpu else -1, det_size=det_size)
 
     labels: list[str] = []
@@ -55,7 +55,7 @@ def build_gallery(known_faces_dir: Path, gallery_path: Path, use_gpu: bool, det_
         print(f'Saved gallery with {len(labels)} enrolled faces to {gallery_path}')
 
 
-def load_yaml_config(path: Path) -> dict:
+def load_yaml_config(path: Path) -> Dict[str, Any]:
     import yaml
 
     with path.open('r', encoding='utf-8') as stream:
@@ -64,7 +64,7 @@ def load_yaml_config(path: Path) -> dict:
 
 if __name__ == '__main__':
     config_path = Path(__file__).resolve().parent / 'config.yaml'
-    config = load_yaml_config(config_path)
+    config: Dict[str, Any] = load_yaml_config(config_path)
     known_faces_dir = Path(config.get('known_faces_dir', 'known_faces'))
     gallery_path = Path(config.get('gallery_path', 'known_faces/gallery.npz'))
     use_gpu = bool(config.get('use_gpu', False))

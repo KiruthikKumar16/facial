@@ -2,19 +2,22 @@ import signal
 import threading
 import time
 from pathlib import Path
+from typing import Any, Dict, List, Tuple, cast
 
 import cv2
-import numpy as np
 import yaml
 
+cv2: Any = cv2
+yaml: Any = yaml
+
 from capture import CameraCapture
-from detector import InsightFaceDetector
+from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
 from logger import DetectionLogger
 from recognizer import Recognizer
 
 
 class CameraPipeline:
-    def __init__(self, camera_id: str, source: str | int, detector: InsightFaceDetector, recognizer: Recognizer, logger: DetectionLogger, frame_size: tuple[int, int]) -> None:
+    def __init__(self, camera_id: str, source: str | int, detector: Any, recognizer: Recognizer, logger: DetectionLogger, frame_size: tuple[int, int]) -> None:
         self.camera_id = camera_id
         self.source = source
         self.detector = detector
@@ -34,15 +37,15 @@ class CameraPipeline:
         self.capture.stop()
         self.capture.join(timeout=5)
 
-    def process_frame(self, camera_id: str, frame: any) -> None:
+    def process_frame(self, camera_id: str, frame: Any) -> None:
         now = time.time()
         if self.last_frame_time is not None:
             self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(now - self.last_frame_time, 1e-6))
         self.last_frame_time = now
 
-        small_frame = cv2.resize(frame, self.frame_size, interpolation=cv2.INTER_LINEAR)
-        detections = self.detector.detect(small_frame)
-        annotated_frame = frame.copy()
+        small_frame: Any = cv2.resize(frame, self.frame_size, interpolation=cv2.INTER_LINEAR)
+        detections: List[Dict[str, Any]] = cast(List[Dict[str, Any]], self.detector.detect(small_frame))
+        annotated_frame: Any = frame.copy()
 
         for face in detections:
             bbox = face['bbox']
@@ -55,11 +58,11 @@ class CameraPipeline:
         with self.latest_frame_lock:
             self.latest_frame = annotated_frame
 
-    def get_frame(self) -> any:
+    def get_frame(self) -> Any:
         with self.latest_frame_lock:
             return None if self.latest_frame is None else self.latest_frame.copy()
 
-    def _annotate_frame(self, frame: any, bbox: list[int], identity: str, confidence: float, source_shape: tuple[int, int]) -> None:
+    def _annotate_frame(self, frame: Any, bbox: list[int], identity: str, confidence: float, source_shape: tuple[int, int]) -> None:
         frame_height, frame_width = frame.shape[:2]
         source_h, source_w = source_shape
         x_scale = frame_width / source_w
@@ -76,9 +79,9 @@ class CameraPipeline:
         cv2.rectangle(frame, (left, bottom - 24), (right, bottom), (0, 255, 0), cv2.FILLED)
         cv2.putText(frame, label, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
-    def _draw_fps(self, frame: any) -> None:
+    def _draw_fps(self, frame: Any) -> None:
         fps_text = f'FPS: {self.fps:.1f}'
-        frame_height, frame_width = frame.shape[:2]
+        _frame_height, frame_width = frame.shape[:2]
         text_size, _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
         text_width, text_height = text_size
         x = frame_width - text_width - 12
@@ -88,22 +91,23 @@ class CameraPipeline:
         cv2.putText(frame, fps_text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
 
-def load_config(path: Path) -> dict:
+def load_config(path: Path) -> Dict[str, Any]:
     with path.open('r', encoding='utf-8') as stream:
         return yaml.safe_load(stream)
 
 
-def build_camera_sources(config: dict) -> list[tuple[str, str | int]]:
-    sources = []
+def build_camera_sources(config: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    sources: List[Tuple[str, Any]] = []
     sources.append(('webcam', int(config.get('webcam_index', 0))))
-    for idx, url in enumerate(config.get('rtsp_urls', []) or []):
+    rtsp_urls = cast(List[Any], config.get('rtsp_urls', []) or [])
+    for idx, url in enumerate(rtsp_urls):
         sources.append((f'rtsp-{idx + 1}', str(url)))
     return sources
 
 
 def main() -> None:
     config_path = Path(__file__).resolve().parent / 'config.yaml'
-    config = load_config(config_path)
+    config: Dict[str, Any] = load_config(config_path)
     threshold = float(config.get('similarity_threshold', 0.60))
     use_gpu = bool(config.get('use_gpu', False))
     frame_width = int(config.get('inference_frame_width', 640))
@@ -112,13 +116,13 @@ def main() -> None:
     gallery_path = str(Path(config.get('gallery_path', 'known_faces/gallery.npz')).resolve())
     log_path = str(Path(config.get('log_file', 'detections.csv')).resolve())
 
-    detector = InsightFaceDetector(use_gpu=use_gpu, det_size=(frame_width, frame_height))
+    detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(frame_width, frame_height)))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
     logger = DetectionLogger(log_path=log_path)
 
-    camera_pipelines = []
+    camera_pipelines: List[Any] = []
     for camera_id, source in build_camera_sources(config):
-        pipeline = CameraPipeline(
+        pipeline: Any = CameraPipeline(
             camera_id=camera_id,
             source=source,
             detector=detector,
@@ -134,7 +138,7 @@ def main() -> None:
 
     stop_event = threading.Event()
 
-    def handle_signal(signum, frame) -> None:
+    def handle_signal(signum: int, frame: Any) -> None:
         stop_event.set()
 
     signal.signal(signal.SIGINT, handle_signal)

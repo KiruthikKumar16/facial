@@ -1,7 +1,7 @@
 import csv
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class DetectionLogger:
@@ -20,7 +20,7 @@ class DetectionLogger:
 
     def log_detection(self, camera_id: str, bbox: list[int], identity: str, confidence: float) -> None:
         row = {
-            'timestamp': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+            'timestamp': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
             'camera_id': camera_id,
             'bbox': f'[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]',
             'identity': identity,

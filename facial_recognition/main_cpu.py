@@ -12,24 +12,39 @@ import os
 import signal
 import threading
 import time
+from typing import Any, Deque, Dict, List, Optional, Tuple, cast
 
 # bind thread limits early to help native libs
 os.environ.setdefault('OMP_NUM_THREADS', os.environ.get('OMP_NUM_THREADS', '4'))
 os.environ.setdefault('MKL_NUM_THREADS', os.environ.get('MKL_NUM_THREADS', '4'))
 os.environ.setdefault('OPENBLAS_NUM_THREADS', os.environ.get('OPENBLAS_NUM_THREADS', '4'))
 
-import cv2
-import yaml
+import cv2  # type: ignore[reportMissingTypeStubs]
+import yaml  # type: ignore[reportMissingTypeStubs]
+
+cv2: Any = cv2
+yaml: Any = yaml
 
 from capture import CameraCapture
-from detector import InsightFaceDetector
+from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
 from logger import DetectionLogger
 from recognizer import Recognizer
 from collections import deque
 
 
 class CpuCameraPipeline:
-    def __init__(self, camera_id, source, detector, recognizer, logger, frame_size=(320, 320), frame_skip=2, recognition_interval=4, use_tracker=True):
+    def __init__(
+        self,
+        camera_id: str,
+        source: Any,
+        detector: Any,
+        recognizer: Any,
+        logger: Any,
+        frame_size: Tuple[int, int] = (320, 320),
+        frame_skip: int = 2,
+        recognition_interval: int = 4,
+        use_tracker: bool = True,
+    ) -> None:
         self.camera_id = camera_id
         self.source = source
         self.detector = detector
@@ -41,16 +56,17 @@ class CpuCameraPipeline:
         self.use_tracker = bool(use_tracker)
         self._frame_count = 0
         self._processed_count = 0
-        self.latest_frame = None
+        self.latest_frame: Optional[Any] = None
         self.lock = threading.Lock()
         # store last processed detections (in full-frame coords) to re-draw on skipped frames
-        self.last_detections = []
-        self.face_trackers = []
+        self.last_detections: List[Dict[str, Any]] = []
+        self.face_trackers: List[Any] = []
+        self._tracker_warning_printed = False
         # timestamps of detector calls for computing detector FPS
-        self._processed_ts = deque()
+        self._processed_ts: Deque[float] = deque()
         self.detector_fps = 0.0
         # timestamps of frame updates for computing display FPS
-        self._display_ts = deque()
+        self._display_ts: Deque[float] = deque()
         self.display_fps = 0.0
         # CameraCapture runs in a thread and calls process_frame
         self.capture = CameraCapture(source, camera_id, self.process_frame, reconnect_interval=10)
@@ -64,7 +80,7 @@ class CpuCameraPipeline:
         self.capture.stop()
         self.capture.join(timeout=5)
 
-    def _create_tracker(self):
+    def _create_tracker(self) -> Optional[Any]:
         try:
             if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerMOSSE_create'):
                 return cv2.legacy.TrackerMOSSE_create()
@@ -74,7 +90,7 @@ class CpuCameraPipeline:
             pass
         return None
 
-    def _init_trackers(self, frame):
+    def _init_trackers(self, frame: Any) -> None:
         self.face_trackers = []
         if not self.use_tracker or not self.last_detections:
             return
@@ -82,6 +98,13 @@ class CpuCameraPipeline:
         for det in self.last_detections:
             tracker = self._create_tracker()
             if tracker is None:
+                if self.use_tracker and not self._tracker_warning_printed:
+                    print(
+                        "Warning: OpenCV tracker unavailable. Install opencv-contrib-python "
+                        "to enable tracker-based CPU frame skipping."
+                    )
+                    self._tracker_warning_printed = True
+                self.use_tracker = False
                 self.face_trackers = []
                 return
 
@@ -97,7 +120,7 @@ class CpuCameraPipeline:
                 return
             self.face_trackers.append(tracker)
 
-    def _update_tracked_boxes(self, frame):
+    def _update_tracked_boxes(self, frame: Any) -> bool:
         if not self.face_trackers or len(self.face_trackers) != len(self.last_detections):
             return False
 
@@ -115,7 +138,7 @@ class CpuCameraPipeline:
 
         return True
 
-    def process_frame(self, camera_id, frame):
+    def process_frame(self, camera_id: str, frame: Any) -> None:
         # update FPS using arrival times
         now = time.time()
         if self.last_fps_time is not None:
@@ -201,10 +224,10 @@ class CpuCameraPipeline:
             # if tracker fails, fall through to a fresh detection run
 
         # Resize once for inference
-        small = cv2.resize(frame, self.frame_size, interpolation=cv2.INTER_LINEAR)
-        detections = self.detector.detect(small)
+        small: Any = cv2.resize(frame, self.frame_size, interpolation=cv2.INTER_LINEAR)
+        detections: List[Dict[str, Any]] = cast(List[Dict[str, Any]], self.detector.detect(small))
 
-        annotated = frame.copy()
+        annotated: Any = frame.copy()
         # annotate detections (scale boxes)
         fh, fw = annotated.shape[:2]
         sh, sw = small.shape[:2]
@@ -213,12 +236,13 @@ class CpuCameraPipeline:
 
         self.last_detections = []
         for face in detections:
-            l, t, r, b = face['bbox']
+            bbox = cast(Tuple[int, int, int, int], face['bbox'])
+            l, t, r, b = bbox
             l = int(l * x_scale)
             r = int(r * x_scale)
             t = int(t * y_scale)
             b = int(b * y_scale)
-            emb = face['embedding']
+            emb: Any = face['embedding']
             identity, score = self.recognizer.recognize(emb)
             # minimal overlay
             cv2.rectangle(annotated, (l, t), (r, b), (0, 255, 0), 2)
@@ -263,20 +287,20 @@ class CpuCameraPipeline:
         with self.lock:
             self.latest_frame = annotated
 
-    def get_frame(self):
+    def get_frame(self) -> Optional[Any]:
         with self.lock:
             return None if self.latest_frame is None else self.latest_frame.copy()
 
 
-def load_config(path: Path):
+def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     with path.open('r', encoding='utf-8') as f:
         return yaml.safe_load(f) or {}
 
 
-def build_sources(cfg):
-    sources = []
+def build_sources(cfg: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    sources: List[Tuple[str, Any]] = []
     sources.append(('webcam', int(cfg.get('webcam_index', 0))))
     for idx, url in enumerate(cfg.get('rtsp_urls', []) or []):
         sources.append((f'rtsp-{idx+1}', str(url)))
@@ -285,7 +309,7 @@ def build_sources(cfg):
 
 def main():
     cfg_path = Path(__file__).resolve().parent / 'config.yaml'
-    cfg = load_config(cfg_path)
+    cfg: Dict[str, Any] = load_config(cfg_path)
 
     # tuned defaults for CPU
     det_w = int(cfg.get('cpu_inference_frame_width', cfg.get('inference_frame_width', 320)))
@@ -300,12 +324,12 @@ def main():
     log_path = str(Path(cfg.get('log_file', 'detections.csv')).resolve())
 
     # detector and recognizer
-    detector = InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector)
+    detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
     logger = DetectionLogger(log_path=log_path)
 
     rec_interval = int(cfg.get('cpu_recognition_interval', 2))
-    pipelines = []
+    pipelines: List[CpuCameraPipeline] = []
     for cam_id, src in build_sources(cfg):
         p = CpuCameraPipeline(
             cam_id,
@@ -324,7 +348,7 @@ def main():
 
     stop_event = threading.Event()
 
-    def handle(sig, frame):
+    def handle(sig: int, frame: Any) -> None:
         stop_event.set()
 
     signal.signal(signal.SIGINT, handle)

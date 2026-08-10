@@ -1,20 +1,20 @@
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 import cv2
 import traceback
 
 
 class CameraCapture(threading.Thread):
-    def __init__(self, source: str | int, camera_id: str, frame_callback: Callable[[str, any], None], reconnect_interval: int) -> None:
+    def __init__(self, source: str | int, camera_id: str, frame_callback: Callable[[str, Any], None], reconnect_interval: int) -> None:
         super().__init__(daemon=True)
         self.source = source
         self.camera_id = camera_id
-        self.frame_callback = frame_callback
+        self.frame_callback: Callable[[str, Any], None] = frame_callback
         self.reconnect_interval = reconnect_interval
         self._stop_event = threading.Event()
-        self._capture = None
+        self._capture: Any = None
 
     def run(self) -> None:
         while not self._stop_event.is_set():
