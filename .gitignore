@@ -11,3 +11,6 @@ myenv/
 *.log
 *.csv
 .DS_Store
+
+# Local face data and enrollments
+known_faces/
