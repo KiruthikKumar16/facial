@@ -41,18 +41,20 @@ Data flow: camera -> detector -> embedder -> matcher -> (recognized | save pendi
 **Architecture Diagram**
 
 ```mermaid
+```mermaid
 flowchart LR
-	Camera[Camera (webcam / RTSP)] -->|frames| Capture[Capture Thread]
-	Capture --> Detector[Detector (SCRFD / Cascade)]
-	Detector --> Embedder[Embedder (ArcFace / ONNX)]
-	Embedder --> Matcher[Matcher (cosine similarity vs gallery.npz)]
-	Matcher -->|match| Recognized[Recognized: label + confidence]
-	Matcher -->|no match| Pending[Save pending crop + embedding]
-	Pending --> Reviewer[Offline Review CLI (review_pending.py)]
-	Recognized --> Logger[Log event -> detections.csv]
+	Camera["Camera (webcam / RTSP)"] -->|frames| Capture["Capture Thread"]
+	Capture --> Detector["Detector (SCRFD / Cascade)"]
+	Detector --> Embedder["Embedder (ArcFace / ONNX)"]
+	Embedder --> Matcher["Matcher (cosine similarity vs gallery.npz)"]
+	Matcher -->|match| Recognized["Recognized: label + confidence"]
+	Matcher -->|no match| Pending["Save pending crop + embedding"]
+	Pending --> Reviewer["Offline Review CLI (review_pending.py)"]
+	Recognized --> Logger["Log event -> detections.csv"]
 	Pending --> Logger
-	Reviewer -->|approve| Enrollment[Enroll into known_faces/ + append to gallery]
+	Reviewer -->|approve| Enrollment["Enroll into known_faces/ + append to gallery"]
 	Enrollment --> Matcher
+```
 ```
 
 **What I Built**
