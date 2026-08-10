@@ -55,12 +55,6 @@ flowchart LR
 	Enrollment --> Matcher
 ```
 
-**Fallback Diagram (SVG)**
-
-If your platform cannot render Mermaid diagrams, an SVG fallback is included below:
-
-![Architecture diagram](docs/architecture.svg)
-
 **What I Built**
 
 - Implemented the threaded camera capture and detection pipeline.
