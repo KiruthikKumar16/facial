@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, cast
 
 import cv2
+import numpy as np
 import yaml
 import logging
 
@@ -144,6 +145,7 @@ def main() -> None:
     det_logger = DetectionLogger(log_path=log_path)
 
     camera_pipelines: List[Any] = []
+    pending_saver = PendingSaver()
     for camera_id, source in build_camera_sources(config):
         pipeline: Any = CameraPipeline(
             camera_id=camera_id,
@@ -152,6 +154,7 @@ def main() -> None:
             recognizer=recognizer,
             logger=det_logger,
             frame_size=(frame_width, frame_height),
+            pending_saver=pending_saver,
         )
         pipeline.capture.reconnect_interval = reconnect_interval
         camera_pipelines.append(pipeline)
