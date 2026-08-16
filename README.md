@@ -110,8 +110,38 @@ Review pending unknowns:
 python review_pending.py
 ```
 
+Open the monitoring dashboard:
+
+```bash
+python dashboard.py
+```
+
+Run the remote surveillance admin backend for the Next.js dashboard:
+
+```bash
+cd dashboard_backend
+python -m pip install -r requirements.txt
+uvicorn dashboard_backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Run the dashboard frontend:
+
+```bash
+cd dashboard_frontend
+npm install
+npm run dev
+```
+
+Advanced metrics included:
+- total detection volume and per-camera event coverage
+- known vs unknown recognition rate
+- confidence distributions for both known and unknown detections
+- gallery size, unique enrolled IDs, and top identities
+- pending unknown placeholders, age, and label counts
+
 Notes:
 - `known_faces/` and `pending/` are local-only directories and are excluded from version control by `.gitignore`.
+- The dashboard is implemented as a static HTML reporter to avoid dependency conflicts with the current vision stack.
 
 **Links**
 

@@ -258,10 +258,19 @@ class CpuCameraPipeline:
             b = int(b * y_scale)
             emb: Any = face['embedding']
             identity, score = self.recognizer.recognize(emb)
+            display_label = identity
+            if identity == 'Unknown' and self.pending_saver is not None:
+                try:
+                    cropped = frame[t:b, l:r].copy()
+                    emb_arr = np.asarray(emb, dtype=np.float32)
+                    pending_label = self.pending_saver.save(emb_arr, cropped)
+                    if pending_label is not None:
+                        display_label = pending_label
+                except Exception:
+                    pass
             # minimal overlay
             cv2.rectangle(annotated, (l, t), (r, b), (0, 255, 0), 2)
-            label = identity if identity != 'Unknown' else 'Unknown'
-            # compute label width to avoid drawing off-canvas
+            label = display_label
             label_text = f"{label} {score:.2f}"
             (lw, lh), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             lx1 = max(l, 0)
@@ -270,14 +279,7 @@ class CpuCameraPipeline:
             cv2.putText(annotated, label_text, (lx1 + 4, b - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             # keep light logging
             if self.logger is not None:
-                self.logger.log_detection(camera_id, [l, t, r, b], identity, float(score))
-            if identity == 'Unknown' and self.pending_saver is not None:
-                try:
-                    cropped = frame[t:b, l:r].copy()
-                    emb_arr = np.asarray(emb, dtype=np.float32)
-                    self.pending_saver.save(emb_arr, cropped)
-                except Exception:
-                    pass
+                self.logger.log_detection(camera_id, [l, t, r, b], label, float(score))
             # store scaled bbox+label for redraw on skipped frames
             self.last_detections.append({'bbox': (l, t, r, b), 'label': label, 'score': float(score)})
 
@@ -329,7 +331,8 @@ def build_sources(cfg: Dict[str, Any]) -> List[Tuple[str, Any]]:
 
 
 def main():
-    cfg_path = Path(__file__).resolve().parent / 'config.yaml'
+    project_root = Path(__file__).resolve().parent.parent
+    cfg_path = project_root / 'config.yaml'
     cfg: Dict[str, Any] = load_config(cfg_path)
 
     # tuned defaults for CPU
@@ -341,13 +344,27 @@ def main():
     detector_model = str(cfg.get('cpu_detector_model', 'buffalo_s'))
 
     threshold = float(cfg.get('similarity_threshold', 0.60))
-    gallery_path = str(Path(cfg.get('gallery_path', 'known_faces/gallery.npz')).resolve())
-    log_path = str(Path(cfg.get('log_file', 'detections.csv')).resolve())
+    gallery_path = str(project_root / cfg.get('gallery_path', 'known_faces/gallery.npz'))
+    log_path = str(project_root / cfg.get('log_file', 'detections.csv'))
+    database_url = cfg.get('database_url', None)
 
     # detector and recognizer
     detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
-    logger = DetectionLogger(log_path=log_path)
+    
+    # Create profile lookup function for database logging
+    def profile_lookup(identity: str) -> Optional[str]:
+        """Look up profile ID by identity name."""
+        if identity == "Unknown":
+            return None
+        # Convert identity name to profile ID (simple mapping)
+        return identity.lower().replace(" ", "-")
+    
+    logger = DetectionLogger(
+        log_path=log_path,
+        db_url=database_url,
+        profile_lookup=profile_lookup
+    )
     pending_saver = PendingSaver()
 
     rec_interval = int(cfg.get('cpu_recognition_interval', 2))

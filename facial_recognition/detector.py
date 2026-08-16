@@ -35,7 +35,7 @@ class InsightFaceDetector:
         self.rec_input_size = 112
 
         if self.use_fast_detector:
-            repo_cascade_path = Path(__file__).resolve().parent / 'cascades' / 'haarcascade_frontalface_default.xml'
+            repo_cascade_path = Path(__file__).resolve().parent.parent / 'cascades' / 'haarcascade_frontalface_default.xml'
             if cascade_path is None and repo_cascade_path.exists():
                 cascade_path = str(repo_cascade_path)
 

@@ -16,6 +16,7 @@ PENDING_DIR = Path('pending')
 GALLERY_PATH = Path('known_faces/gallery.npz')
 KNOWN_DIR = Path('known_faces')
 REUSE_NAME_THRESHOLD = 0.95
+DEFAULT_UNKNOWN_LABEL_PREFIX = 'Person'
 
 
 def append_to_gallery(name: str, emb: np.ndarray) -> None:
@@ -34,6 +35,24 @@ def append_to_gallery(name: str, emb: np.ndarray) -> None:
         embs = np.vstack([embs, np.asarray(emb, dtype=np.float32)])
 
     np.savez_compressed(GALLERY_PATH, labels=np.array(labels, dtype=object), embeddings=embs)
+
+
+def extract_label(data: np.ndarray, filename: str) -> str:
+    if 'label' in data:
+        raw_label = data['label']
+        if hasattr(raw_label, 'tolist'):
+            try:
+                return str(raw_label.tolist())
+            except Exception:
+                return str(raw_label)
+        return str(raw_label)
+
+    if filename.startswith('pending_'):
+        parts = filename[len('pending_'):].split('_')
+        if len(parts) >= 2 and parts[0] == DEFAULT_UNKNOWN_LABEL_PREFIX and parts[1].isdigit():
+            return f'{DEFAULT_UNKNOWN_LABEL_PREFIX} {parts[1]}'
+
+    return f'{DEFAULT_UNKNOWN_LABEL_PREFIX} 0'
 
 
 def find_similar_pending_name(emb: np.ndarray, pending_names: Dict[str, np.ndarray]) -> Optional[str]:
@@ -67,6 +86,7 @@ def review() -> None:
         with np.load(item, allow_pickle=True) as data:
             img = data['image']
             emb = data['embedding']
+            label = extract_label(data, item.name)
 
         suggested_name = find_similar_pending_name(emb, recent_names)
         if suggested_name is not None:
@@ -75,18 +95,27 @@ def review() -> None:
             if use_suggested in ('', 'y', 'yes'):
                 name = suggested_name
             else:
-                name = input('Enter name (or leave empty to skip): ').strip()
+                name = input(
+                    f'Current default label is "{label}". Enter a new name to change it, or press Enter to keep it: '
+                ).strip()
+                if not name:
+                    name = label
         else:
             win = 'review'
             cv2.imshow(win, img)
-            print(f'Reviewing {item.name} — press any key in image window to continue, then enter name (empty=skip):')
+            print(
+                f'Reviewing {item.name} (default label: {label}) — press any key in image window to continue, then enter name.'
+            )
             cv2.waitKey(0)
             cv2.destroyWindow(win)
-            name = input('Enter name (or leave empty to skip): ').strip()
-
-        if not name:
-            print('Skipped')
-            continue
+            name = input(
+                f'Enter name to enroll, or press Enter to keep "{label}" (skip by typing "skip"): '
+            ).strip()
+            if name.lower() == 'skip':
+                print('Skipped')
+                continue
+            if not name:
+                name = label
 
         person_dir = KNOWN_DIR / name
         person_dir.mkdir(parents=True, exist_ok=True)

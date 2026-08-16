@@ -2,7 +2,7 @@ import signal
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, cast
+from typing import Any, Dict, List, Tuple, Optional, cast
 
 import cv2
 import numpy as np
@@ -60,8 +60,7 @@ class CameraPipeline:
             bbox = face['bbox']
             embedding = face['embedding']
             identity, confidence = self.recognizer.recognize(embedding)
-            self.logger.log_detection(camera_id, bbox, identity, confidence)
-            # if unknown, save to pending for user review
+            display_label = identity
             if identity == 'Unknown' and self.pending_saver is not None:
                 # bbox is in small_frame coordinates
                 left, top, right, bottom = bbox
@@ -72,11 +71,14 @@ class CameraPipeline:
                 try:
                     face_img = small_frame[top:bottom, left:right].copy()
                     emb_arr = np.asarray(embedding, dtype=np.float32)
-                    self.pending_saver.save(emb_arr, face_img)
+                    pending_label = self.pending_saver.save(emb_arr, face_img)
+                    if pending_label is not None:
+                        display_label = pending_label
                 except Exception:
                     # don't let pending save errors disrupt pipeline
                     pass
-            self._annotate_frame(annotated_frame, bbox, identity, confidence, small_frame.shape[:2])
+            self.logger.log_detection(camera_id, bbox, display_label, confidence)
+            self._annotate_frame(annotated_frame, bbox, display_label, confidence, small_frame.shape[:2])
 
         self._draw_fps(annotated_frame)
         with self.latest_frame_lock:
@@ -130,19 +132,35 @@ def build_camera_sources(config: Dict[str, Any]) -> List[Tuple[str, Any]]:
 
 
 def main() -> None:
-    config_path = Path(__file__).resolve().parent / 'config.yaml'
+    project_root = Path(__file__).resolve().parent.parent
+    config_path = project_root / 'config.yaml'
     config: Dict[str, Any] = load_config(config_path)
     threshold = float(config.get('similarity_threshold', 0.60))
     use_gpu = bool(config.get('use_gpu', False))
     frame_width = int(config.get('inference_frame_width', 640))
     frame_height = int(config.get('inference_frame_height', 640))
     reconnect_interval = int(config.get('reconnect_interval_seconds', 10))
-    gallery_path = str(Path(config.get('gallery_path', 'known_faces/gallery.npz')).resolve())
-    log_path = str(Path(config.get('log_file', 'detections.csv')).resolve())
+    gallery_path = str(project_root / config.get('gallery_path', 'known_faces/gallery.npz'))
+    log_path = str(project_root / config.get('log_file', 'detections.csv'))
+    database_url = config.get('database_url', None)
 
     detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(frame_width, frame_height)))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
-    det_logger = DetectionLogger(log_path=log_path)
+    
+    # Create profile lookup function for database logging
+    def profile_lookup(identity: str) -> Optional[str]:
+        """Look up profile ID by identity name."""
+        if identity == "Unknown":
+            return None
+        # Convert identity name to profile ID (simple mapping)
+        # In production, query the database or use a real mapping
+        return identity.lower().replace(" ", "-")
+    
+    det_logger = DetectionLogger(
+        log_path=log_path,
+        db_url=database_url,
+        profile_lookup=profile_lookup
+    )
 
     camera_pipelines: List[Any] = []
     pending_saver = PendingSaver()

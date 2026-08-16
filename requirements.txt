@@ -3,3 +3,5 @@ numpy==2.5.1
 PyYAML==6.0.3
 insightface==1.0.1
 onnxruntime==1.28.0
+# pandas and streamlit removed because numpy 2.5.1 is required by existing vision stack
+# For a dashboard without dependency conflicts, run dashboard.py directly with the project virtual environment.

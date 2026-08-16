@@ -7,10 +7,25 @@ __pycache__/
 env/
 venv/
 myenv/
+backend/venv/
 *.sqlite3
 *.log
 *.csv
 .DS_Store
+
+# Secrets — never commit real credentials
+.env
+.env.local
+.env.production
+backend/.env
+facial-recognition-dashboard/.env.local
+!.env*.example
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
 
 # Local face data and enrollments
 known_faces/

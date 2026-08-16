@@ -1,5 +1,5 @@
 # Camera and recognition settings
-webcam_index: 0
+webcam_index: 1
 rtsp_urls:
   - rtsp://username:password@camera1.example.com:554/stream
   - rtsp://username:password@camera2.example.com:554/stream
@@ -28,6 +28,10 @@ gallery_path: known_faces/gallery.npz
 
 # Log file path for every detection event
 log_file: detections.csv
+
+# Database URL for real-time logging to PostgreSQL
+# Format: postgresql://user:password@host:port/database
+database_url: postgresql://postgres:postgres@localhost:5432/facial_recognition
 
 # Seconds to wait before retrying a dropped or unavailable camera connection
 reconnect_interval_seconds: 10
