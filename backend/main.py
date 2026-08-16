@@ -293,9 +293,17 @@ def update_thresholds(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-    )
+    if settings.debug:
+        uvicorn.run(
+            "main:app",
+            host=settings.host,
+            port=settings.port,
+            reload=True,
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=settings.host,
+            port=settings.port,
+            reload=False,
+        )

@@ -1,11 +1,23 @@
 """SQLAlchemy ORM models for facial recognition system."""
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, Text, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, Text, Enum as SQLEnum, TypeDecorator
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY
-from pgvector.sqlalchemy import Vector
 from database import Base
 import enum
+
+try:
+    from pgvector.sqlalchemy import Vector as _PGVector
+
+    def Vector(dim: int):
+        return _PGVector(dim)
+except Exception:  # pragma: no cover - local dev fallback
+    # Fallback when pgvector package is not installed (e.g. local Python 3.14 sandbox).
+    # On Render/production with pgvector installed the real type is used.
+    from sqlalchemy.dialects.postgresql import TEXT as _FallbackVectorType
+
+    def Vector(dim: int):
+        return _FallbackVectorType()
 
 
 class CameraStatus(str, enum.Enum):
