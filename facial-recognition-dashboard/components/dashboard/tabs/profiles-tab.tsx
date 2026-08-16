@@ -205,7 +205,7 @@ function EnrolmentModal() {
 function DedupPanel() {
   const { data: dupes = [] } = useQuery({
     queryKey: ['duplicates'],
-    queryFn: fetchDuplicates,
+    queryFn: () => fetchDuplicates(),
   })
   const [merged, setMerged] = useState<string[]>([])
 
@@ -269,7 +269,7 @@ function DedupPanel() {
 export function ProfilesTab() {
   const { data: profiles = [] } = useQuery({
     queryKey: ['profiles'],
-    queryFn: fetchProfiles,
+    queryFn: () => fetchProfiles(),
   })
   const [role, setRole] = useState<'all' | ProfileRole>('all')
   const [query, setQuery] = useState('')

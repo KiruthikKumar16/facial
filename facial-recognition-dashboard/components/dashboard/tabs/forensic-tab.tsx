@@ -172,7 +172,7 @@ function MatchRow({ match }: { match: ForensicMatch }) {
 function TrajectoryTimeline() {
   const { data: trajectory } = useQuery({
     queryKey: ['trajectory'],
-    queryFn: fetchTrajectory,
+    queryFn: () => fetchTrajectory(),
   })
   if (!trajectory) return null
 
@@ -224,7 +224,7 @@ function TrajectoryTimeline() {
 export function ForensicTab() {
   const { data: cameras = [] } = useQuery({
     queryKey: ['cameras'],
-    queryFn: fetchCameras,
+    queryFn: () => fetchCameras(),
   })
   const [file, setFile] = useState<File | null>(null)
   const [selectedCameras, setSelectedCameras] = useState<string[]>([])

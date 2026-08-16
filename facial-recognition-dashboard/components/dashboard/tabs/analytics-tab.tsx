@@ -60,7 +60,7 @@ const tooltipStyle = {
 }
 
 function FootfallChart() {
-  const { data = [] } = useQuery({ queryKey: ['footfall'], queryFn: fetchFootfall })
+  const { data = [] } = useQuery({ queryKey: ['footfall'], queryFn: () => fetchFootfall() })
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b border-border py-3">
@@ -160,7 +160,7 @@ function DemographicPie({
 function AttendanceTable() {
   const { data = [] } = useQuery({
     queryKey: ['attendance'],
-    queryFn: fetchAttendance,
+    queryFn: () => fetchAttendance(),
   })
   return (
     <Card className="gap-0 py-0">
@@ -231,13 +231,13 @@ export function AnalyticsTab() {
           <DemographicPie
             title="Age Groups"
             queryKey="age-dist"
-            queryFn={fetchAgeDistribution}
+            queryFn={() => fetchAgeDistribution()}
             colors={AGE_COLORS}
           />
           <DemographicPie
             title="Gender Ratio"
             queryKey="gender-dist"
-            queryFn={fetchGenderDistribution}
+            queryFn={() => fetchGenderDistribution()}
             colors={GENDER_COLORS}
           />
         </div>

@@ -12,8 +12,10 @@ export const toneGradient: Record<string, string> = {
   indigo: 'from-indigo-500/40 to-indigo-900/60',
 }
 
-export function formatTime(iso: string): string {
+export function formatTime(iso: string | undefined | null): string {
+  if (!iso) return '—'
   const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
   return d.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
@@ -22,8 +24,10 @@ export function formatTime(iso: string): string {
   })
 }
 
-export function formatClock(iso: string): string {
+export function formatClock(iso: string | undefined | null): string {
+  if (!iso) return '—'
   const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
   return d.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
@@ -31,7 +35,8 @@ export function formatClock(iso: string): string {
   })
 }
 
-export function formatNumber(n: number): string {
+export function formatNumber(n: number | undefined | null): string {
+  if (n === undefined || n === null || typeof n !== 'number' || isNaN(n)) return '—'
   return n.toLocaleString('en-US')
 }
 

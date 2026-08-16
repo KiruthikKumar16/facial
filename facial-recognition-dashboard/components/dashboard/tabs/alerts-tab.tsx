@@ -116,7 +116,7 @@ function AlertCard({
 function AlertSidebar() {
   const { data: alerts = [] } = useQuery({
     queryKey: ['alerts'],
-    queryFn: fetchAlerts,
+    queryFn: () => fetchAlerts(),
   })
   const [acked, setAcked] = useState<string[]>([])
 
@@ -154,7 +154,7 @@ function AlertSidebar() {
 function UnknownQueue() {
   const { data: captures = [] } = useQuery({
     queryKey: ['unknown-captures'],
-    queryFn: fetchUnknownCaptures,
+    queryFn: () => fetchUnknownCaptures(),
   })
   const [dismissed, setDismissed] = useState<string[]>([])
   const visible = captures.filter((c) => !dismissed.includes(c.id))
@@ -230,7 +230,7 @@ const STATUS_FILTERS: Array<'all' | DetectionStatus> = [
 function LogTable() {
   const { data: logs = [] } = useQuery({
     queryKey: ['face-logs'],
-    queryFn: fetchFaceLogs,
+    queryFn: () => fetchFaceLogs(),
   })
   const [status, setStatus] = useState<'all' | DetectionStatus>('all')
   const [query, setQuery] = useState('')

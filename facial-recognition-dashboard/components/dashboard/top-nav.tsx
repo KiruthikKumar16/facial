@@ -74,9 +74,18 @@ function Kpi({
 }
 
 export function TopNav() {
-  const { data: kpis } = useQuery({ queryKey: ['kpis'], queryFn: fetchKpis })
+  const { data: kpis } = useQuery({ queryKey: ['kpis'], queryFn: () => fetchKpis() })
 
-  const health = kpis?.systemHealth ?? 'green'
+  const health: SystemHealth =
+    kpis?.systemHealth === 'green' || kpis?.systemHealth === 'yellow' || kpis?.systemHealth === 'red'
+      ? kpis.systemHealth
+      : 'green'
+  const connectedCameras =
+    typeof kpis?.connectedCameras === 'number' ? kpis.connectedCameras : null
+  const totalCameras = typeof kpis?.totalCameras === 'number' ? kpis.totalCameras : null
+  const detectionsToday =
+    typeof kpis?.detectionsToday === 'number' ? kpis.detectionsToday : null
+  const activeAlerts = typeof kpis?.activeAlerts === 'number' ? kpis.activeAlerts : null
 
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-md">
@@ -102,18 +111,22 @@ export function TopNav() {
           <Kpi
             icon={CameraIcon}
             label="Cameras Online"
-            value={`${kpis?.connectedCameras ?? '—'}/${kpis?.totalCameras ?? '—'}`}
+            value={
+              connectedCameras !== null && totalCameras !== null
+                ? `${connectedCameras}/${totalCameras}`
+                : '—/—'
+            }
           />
           <Kpi
             icon={ScanFace}
             label="Detections Today"
-            value={kpis ? formatNumber(kpis.detectionsToday) : '—'}
+            value={formatNumber(detectionsToday)}
           />
           <Kpi
             icon={ShieldAlert}
             label="Active Alerts"
-            value={String(kpis?.activeAlerts ?? '—')}
-            badge={kpis?.activeAlerts}
+            value={activeAlerts !== null ? String(activeAlerts) : '—'}
+            badge={activeAlerts ?? undefined}
             tone="text-destructive"
           />
           <div className="flex items-center gap-3 px-4">

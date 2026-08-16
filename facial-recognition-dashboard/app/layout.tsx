@@ -26,6 +26,10 @@ export const viewport: Viewport = {
   themeColor: '#0b0d10',
 }
 
+const analyticsEnabled =
+  process.env.NODE_ENV === 'production' &&
+  process.env.NEXT_PUBLIC_VERCEL_ANALYTICS_ENABLED === '1'
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -35,7 +39,7 @@ export default function RootLayout({
     <html lang="en" className={`dark ${geistSans.variable} ${geistMono.variable}`}>
       <body className="bg-background font-sans antialiased">
         <Providers>{children}</Providers>
-        {process.env.NODE_ENV === 'production' && <Analytics />}
+        {analyticsEnabled && <Analytics />}
       </body>
     </html>
   )

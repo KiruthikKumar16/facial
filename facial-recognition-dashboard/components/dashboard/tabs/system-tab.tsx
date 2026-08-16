@@ -140,7 +140,7 @@ function CameraCard({ camera }: { camera: Camera }) {
 function CameraGrid() {
   const { data: cameras = [] } = useQuery({
     queryKey: ['cameras'],
-    queryFn: fetchCameras,
+    queryFn: () => fetchCameras(),
   })
   const online = cameras.filter((c) => c.status === 'online').length
   return (
@@ -207,7 +207,7 @@ function ThresholdSlider({
 }
 
 function ThresholdPanel() {
-  const { data } = useQuery({ queryKey: ['thresholds'], queryFn: fetchThresholds })
+  const { data } = useQuery({ queryKey: ['thresholds'], queryFn: () => fetchThresholds() })
   const save = useMutation({ mutationFn: saveThresholds })
   const [draft, setDraft] = useState<ModelThresholds | null>(null)
 
