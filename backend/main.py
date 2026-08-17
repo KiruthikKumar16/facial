@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("Database initialized")
     
-    if InsightFaceDetector is not None:
+    if InsightFaceDetector is not None and not os.environ.get("RENDER"):
         logger.info("Loading AI Models via facial_recognition module...")
         try:
             detector = InsightFaceDetector(use_gpu=False, det_size=(320, 320), fast_detector=False, model_name='buffalo_s')
@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to load AI models: {e}")
     else:
+        logger.warning("AI logic is disabled (either module missing or running on Render).")
         logger.warning("facial_recognition module not available. AI logic will be disabled.")
         
     yield
