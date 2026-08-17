@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     if InsightFaceDetector is not None:
         logger.info("Loading AI Models via facial_recognition module...")
         try:
-            detector = InsightFaceDetector(use_gpu=False, det_size=(640, 640), fast_detector=False)
+            detector = InsightFaceDetector(use_gpu=False, det_size=(640, 640), fast_detector=False, model_name='buffalo_s')
             ai_models['detector'] = detector
             logger.info("AI Models Loaded")
         except Exception as e:
