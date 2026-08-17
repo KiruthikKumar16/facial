@@ -1,6 +1,7 @@
 import csv
 import os
 import threading
+import queue
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -12,10 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class DetectionLogger:
-    """Thread-safe daily CSV logger with database sync and duplicate suppression.
+    """Thread-safe daily CSV logger with background database sync and duplicate suppression.
 
     - Writes daily files to CSV (e.g., `detections-2026-08-11.csv`)
-    - Optionally writes to PostgreSQL for real-time dashboard updates
+    - Writes to PostgreSQL via a background thread to prevent FPS drops
     - Suppresses duplicate records (same camera_id, identity, bbox) within a short window
     """
 
@@ -40,22 +41,58 @@ class DetectionLogger:
         self._dedup: dict[Tuple[str, str, Tuple[int, int, int, int]], float] = {}
         self._dedup_window = float(dedup_window_seconds)
 
-        # Database connection (optional)
-        self.db_session = None
-        self.profile_lookup = profile_lookup  # Function to lookup profile by identity
+        self.profile_lookup = profile_lookup
         
-        if db_url:
+        # Setup background worker for database I/O to avoid dropping camera FPS
+        self.log_queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self.db_url = db_url
+        self._ensured_cameras = set()
+        
+        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker.start()
+
+    def _worker_loop(self):
+        """Background thread to handle synchronous database writes and HTTP requests."""
+        db_session = None
+        if self.db_url:
             try:
                 from sqlalchemy import create_engine
                 from sqlalchemy.orm import sessionmaker
-                
-                engine = create_engine(db_url, echo=False)
+                engine = create_engine(self.db_url, echo=False)
                 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-                self.db_session = SessionLocal()
-                logger.info("✓ Database connection established for real-time logging")
+                db_session = SessionLocal()
+                logger.info("✓ Database connection established for real-time logging (Worker)")
             except Exception as e:
                 logger.warning(f"⚠ Could not connect to database: {e}. Falling back to CSV only.")
-                self.db_session = None
+        
+        import urllib.request
+        import os
+        api_url = os.environ.get("API_URL", "http://localhost:8000").rstrip('/')
+        
+        while not self._stop_event.is_set():
+            try:
+                item = self.log_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+                
+            camera_id, identity, confidence, bbox, now = item
+            
+            if db_session:
+                try:
+                    self._write_to_db(db_session, camera_id, identity, confidence, bbox, now)
+                    
+                    # Notify backend to trigger WebSocket updates
+                    req = urllib.request.Request(f"{api_url}/api/internal/notify_update", method="POST")
+                    with urllib.request.urlopen(req, timeout=1.5) as f:
+                        pass
+                except Exception as e:
+                    logger.warning(f"Background DB/API task error: {e}")
+                    
+            self.log_queue.task_done()
+            
+        if db_session:
+            db_session.close()
 
     def _open_for_date(self, date_str: str):
         if self.current_date == date_str and self.current_file is not None:
@@ -120,34 +157,19 @@ class DetectionLogger:
                 'confidence': f'{confidence:.4f}',
             }
             
-            # Write to CSV
+            # Write to CSV synchronously
             try:
                 self.current_writer.writerow(row)
                 self.current_file.flush()
             except Exception as e:
                 logger.warning(f"Failed to write CSV: {e}")
 
-            # Write to Database (if connected)
-            if self.db_session:
-                self._write_to_db(camera_id, identity, confidence, bbox, now)
-                
-                # Notify backend to trigger WebSocket updates
-                try:
-                    import urllib.request
-                    import os
-                    api_url = os.environ.get("API_URL", "http://localhost:8000")
-                    req = urllib.request.Request(
-                        f"{api_url.rstrip('/')}/api/internal/notify_update", 
-                        method="POST"
-                    )
-                    with urllib.request.urlopen(req, timeout=0.5) as f:
-                        pass
-                except Exception:
-                    pass
+            # Send to background worker for Database I/O
+            self.log_queue.put((camera_id, identity, confidence, bbox, now))
 
         print(f"[{row['timestamp']}] {camera_id} {row['bbox']} -> {identity} ({confidence:.4f})")
 
-    def _write_to_db(self, camera_id: str, identity: str, confidence: float, bbox: list[int], timestamp: datetime) -> None:
+    def _write_to_db(self, db_session, camera_id: str, identity: str, confidence: float, bbox: list[int], timestamp: datetime) -> None:
         """Write detection to PostgreSQL database."""
         try:
             # Import here to avoid circular dependency
@@ -160,7 +182,16 @@ class DetectionLogger:
             if backend_dir not in sys.path:
                 sys.path.insert(0, backend_dir)
                 
-            from backend.models import Detection, DetectionStatus as DetectionStatusEnum
+            from backend.models import Detection, DetectionStatus as DetectionStatusEnum, Camera
+            
+            # Ensure camera exists to prevent ForeignKeyViolation
+            if camera_id not in self._ensured_cameras:
+                existing_cam = db_session.query(Camera).filter_by(id=camera_id).first()
+                if not existing_cam:
+                    new_cam = Camera(id=camera_id, name=camera_id, status="online")
+                    db_session.add(new_cam)
+                    db_session.commit()
+                self._ensured_cameras.add(camera_id)
             
             # Determine profile and status
             profile_id = None
@@ -182,38 +213,32 @@ class DetectionLogger:
                 status=status,
                 confidence=confidence,
                 bbox=f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]",
-                liveness_score=0.0,  # Not available yet
+                liveness_score=0.0,
                 age=None,
                 gender="unknown",
                 wearing_mask=False,
                 wearing_glasses=False,
             )
             
-            self.db_session.add(detection)
-            self.db_session.commit()
+            db_session.add(detection)
+            db_session.commit()
             
         except Exception as e:
-            logger.warning(f"Failed to write to database: {e}")
+            logger.warning(f"Failed to write detection to database: {e}")
             try:
-                self.db_session.rollback()
+                db_session.rollback()
             except Exception:
                 pass
 
     def close(self) -> None:
+        self._stop_event.set()
+        
         with self.lock:
             try:
                 if self.current_file is not None:
                     self.current_file.close()
             except Exception:
                 pass
-            
-            # Close database session
-            if self.db_session:
-                try:
-                    self.db_session.close()
-                    logger.info("Database session closed")
-                except Exception as e:
-                    logger.warning(f"Error closing database: {e}")
 
     def __del__(self) -> None:
         """Cleanup on garbage collection."""
