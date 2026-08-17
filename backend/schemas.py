@@ -1,6 +1,6 @@
 """Pydantic models for API request/response validation."""
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 
@@ -198,3 +198,117 @@ class AttendanceRecordResponse(BaseModel):
     last_seen: datetime
     detection_count: int
     status: str  # present, absent, late
+
+
+# ==================== Duplicate Detection ====================
+
+class DuplicateCandidateResponse(BaseModel):
+    id: str
+    profileAId: str
+    profileAName: str
+    profileARole: str
+    profileAAvatarTone: str
+    profileBId: str
+    profileBName: str
+    profileBRole: str
+    profileBAvatarTone: str
+    cosineSimilarity: float
+    sharedSightings: int
+
+
+# ==================== Trajectory ====================
+
+class TrajectoryNodeResponse(BaseModel):
+    cameraId: str
+    cameraName: str
+    zone: Optional[str]
+    timestamp: datetime
+    confidence: float
+    snapshotTone: str
+
+
+class SubjectTrajectoryResponse(BaseModel):
+    profileId: str
+    profileName: str
+    role: str
+    path: List[TrajectoryNodeResponse]
+
+
+# ==================== Footfall ====================
+
+class FootfallBucketResponse(BaseModel):
+    hour: int
+    detections: int
+    recognized: int
+    unknown: int
+
+
+# ==================== Demographics ====================
+
+class DemographicSliceResponse(BaseModel):
+    label: str
+    value: int
+
+
+# ==================== System KPIs (Full frontend shape) ====================
+
+class SystemKpisFullResponse(BaseModel):
+    connectedCameras: int
+    totalCameras: int
+    detectionsToday: int
+    activeAlerts: int
+    systemHealth: str
+    gpuLoad: float
+    cpuLoad: float
+    avgLatencyMs: float
+
+
+# ==================== Forensic Match (Full frontend shape) ====================
+
+class ForensicMatchFullResponse(BaseModel):
+    profileId: str
+    profileName: str
+    role: str
+    cosineSimilarity: float
+    lastSeen: Optional[datetime]
+    cameraName: Optional[str]
+    avatarTone: str
+
+
+# ==================== Attendance (Full frontend shape) ====================
+
+class AttendanceRecordFullResponse(BaseModel):
+    profileId: str
+    profileName: str
+    role: str
+    department: Optional[str]
+    checkIn: Optional[datetime]
+    checkOut: Optional[datetime]
+    totalSightings: int
+    avatarTone: str
+
+
+# ==================== Alert Acknowledge ====================
+
+class AlertAcknowledgeRequest(BaseModel):
+    acknowledged: bool = True
+
+
+# ==================== Profile Merge ====================
+
+class ProfileMergeRequest(BaseModel):
+    profileAId: str
+    profileBId: str
+    keepProfile: Optional[str] = None
+    deleteMerged: Optional[bool] = True
+
+
+# ==================== Profile Create ====================
+
+class ProfileCreateRequest(BaseModel):
+    name: str
+    role: Optional[str] = "visitor"
+    department: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = "unknown"
+    notes: Optional[str] = None

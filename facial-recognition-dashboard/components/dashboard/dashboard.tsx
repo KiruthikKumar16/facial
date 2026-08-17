@@ -8,6 +8,10 @@ import { ForensicTab } from './tabs/forensic-tab'
 import { ProfilesTab } from './tabs/profiles-tab'
 import { AnalyticsTab } from './tabs/analytics-tab'
 import { SystemTab } from './tabs/system-tab'
+import { ErrorBoundary } from '@/components/ui/error-boundary'
+import { useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
+import { connectAlertsWebSocket, connectCamerasWebSocket, connectKpisWebSocket } from '@/lib/api'
 import {
   Siren,
   Search,
@@ -26,6 +30,27 @@ const TABS = [
 
 export function Dashboard() {
   const [tab, setTab] = useState<string>('alerts')
+  const queryClient = useQueryClient()
+
+  useEffect(() => {
+    const wsAlerts = connectAlertsWebSocket(() => {
+      queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      queryClient.invalidateQueries({ queryKey: ['face-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['unknown-captures'] })
+    })
+    const wsCameras = connectCamerasWebSocket(() => {
+      queryClient.invalidateQueries({ queryKey: ['cameras'] })
+    })
+    const wsKpis = connectKpisWebSocket(() => {
+      queryClient.invalidateQueries({ queryKey: ['kpis'] })
+    })
+
+    return () => {
+      wsAlerts.close()
+      wsCameras.close()
+      wsKpis.close()
+    }
+  }, [queryClient])
 
   return (
     <div className="min-h-screen">
@@ -51,19 +76,19 @@ export function Dashboard() {
 
         <main className="mx-auto w-full max-w-[1600px] p-4 lg:p-6">
           <TabsContent value="alerts">
-            <AlertsTab />
+            <ErrorBoundary><AlertsTab /></ErrorBoundary>
           </TabsContent>
           <TabsContent value="forensic">
-            <ForensicTab />
+            <ErrorBoundary><ForensicTab /></ErrorBoundary>
           </TabsContent>
           <TabsContent value="profiles">
-            <ProfilesTab />
+            <ErrorBoundary><ProfilesTab /></ErrorBoundary>
           </TabsContent>
           <TabsContent value="analytics">
-            <AnalyticsTab />
+            <ErrorBoundary><AnalyticsTab /></ErrorBoundary>
           </TabsContent>
           <TabsContent value="system">
-            <SystemTab />
+            <ErrorBoundary><SystemTab /></ErrorBoundary>
           </TabsContent>
         </main>
       </Tabs>
