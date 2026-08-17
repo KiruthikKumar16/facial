@@ -48,6 +48,7 @@ class DetectionLogger:
         self._stop_event = threading.Event()
         self.db_url = db_url
         self._ensured_cameras = set()
+        self._ensured_profiles = set()
         
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
@@ -201,6 +202,16 @@ class DetectionLogger:
                 profile_id = self.profile_lookup(identity)
                 if profile_id:
                     status = DetectionStatusEnum.recognized
+                    
+                    # Ensure profile exists to prevent ForeignKeyViolation
+                    if profile_id not in self._ensured_profiles:
+                        from backend.models import Profile, ProfileRole
+                        existing_profile = db_session.query(Profile).filter_by(id=profile_id).first()
+                        if not existing_profile:
+                            new_profile = Profile(id=profile_id, name=identity, role=ProfileRole.employee)
+                            db_session.add(new_profile)
+                            db_session.commit()
+                        self._ensured_profiles.add(profile_id)
             elif identity == "Unknown":
                 status = DetectionStatusEnum.unknown
             
