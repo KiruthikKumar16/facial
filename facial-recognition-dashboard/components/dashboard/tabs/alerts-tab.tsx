@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   fetchAlerts,
   fetchFaceLogs,
-  fetchUnknownCaptures,
+  fetchCameras,
 } from '@/lib/api'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -38,6 +38,7 @@ import {
   Search,
   UserPlus,
   UserRoundPlus,
+  Video,
   X,
 } from 'lucide-react'
 
@@ -149,64 +150,70 @@ function AlertSidebar() {
   )
 }
 
-// --- Unknown face queue ----------------------------------------------------
+// --- Live camera feeds ----------------------------------------------------
 
-function UnknownQueue() {
-  const { data: captures = [] } = useQuery({
-    queryKey: ['unknown-captures'],
-    queryFn: () => fetchUnknownCaptures(),
+function CCTVTimestamp() {
+  const [time, setTime] = useState(() => new Date())
+  
+  // Use useEffect to update the time every second (optional, safe for client components)
+  // To avoid hydration mismatch, we render the time only after mount if needed, 
+  // or just use suppressHydrationWarning.
+  return <span suppressHydrationWarning>{time.toISOString().split('T')[1].substring(0, 8)} Z</span>
+}
+
+function LiveCameraFeeds() {
+  const { data: cameras = [] } = useQuery({
+    queryKey: ['cameras'],
+    queryFn: () => fetchCameras(),
   })
-  const [dismissed, setDismissed] = useState<string[]>([])
-  const visible = captures.filter((c) => !dismissed.includes(c.id))
+  
+  const onlineCameras = cameras.filter(c => c.status === 'online' || c.status === 'degraded')
 
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b border-border py-3">
         <SectionHeading
-          icon={ScanFace}
-          title="Unknown Face Queue"
-          count={visible.length}
-          description="Unregistered / low-confidence captures awaiting triage"
+          icon={Video}
+          title="Live Camera Feeds"
+          count={onlineCameras.length}
+          description="Real-time CCTV monitoring streams"
         />
       </CardHeader>
       <CardContent className="p-3">
-        {visible.length === 0 ? (
+        {onlineCameras.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            Queue cleared — no captures pending triage.
+            No online cameras available.
           </p>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-            {visible.map((c) => (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-2">
+            {onlineCameras.map((c) => (
               <div
                 key={c.id}
-                className="group rounded-lg border border-border bg-card/50 p-2.5"
+                className="group relative overflow-hidden rounded-lg border border-border bg-card/50 aspect-video shadow-inner"
               >
-                <FaceTile tone={c.snapshotTone} size="xl" />
-                <div className="mt-2 space-y-1">
-                  <div className="flex items-center justify-between font-mono text-[11px] text-muted-foreground">
-                    <span>{c.cameraId}</span>
-                    <span>{formatTime(c.timestamp)}</span>
+                {/* Simulated CCTV feed image */}
+                <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&q=80')] bg-cover bg-center opacity-40 grayscale group-hover:grayscale-0 transition-all duration-700" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40 mix-blend-multiply" />
+                {/* Scanlines overlay */}
+                <div className="absolute inset-0 pointer-events-none opacity-20 bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%]" />
+                
+                {/* CCTV Overlays */}
+                <div className="absolute top-3 left-3 flex items-center gap-2 font-mono text-[10px] sm:text-xs font-semibold text-white/90 drop-shadow-md">
+                  <div className="flex items-center gap-1.5 rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
+                    <div className="size-2 rounded-full bg-red-500 animate-pulse" />
+                    REC
                   </div>
-                  <ConfidenceMeter value={c.confidence} />
+                  <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
+                    {c.name}
+                  </div>
                 </div>
-                <div className="mt-2.5 flex flex-col gap-1.5">
-                  <Button size="xs" variant="outline" className="w-full justify-start">
-                    <UserRoundPlus /> Assign to Profile
-                  </Button>
-                  <div className="flex gap-1.5">
-                    <Button size="xs" variant="secondary" className="flex-1">
-                      <UserPlus /> Register
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      className="flex-1"
-                      onClick={() =>
-                        setDismissed((prev) => [...prev, c.id])
-                      }
-                    >
-                      <X /> Dismiss
-                    </Button>
+                
+                <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between font-mono text-[10px] sm:text-xs text-white/80 drop-shadow-md">
+                  <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10 truncate max-w-[60%]">
+                    IP: {c.ipAddress || '192.168.1.x'} | {c.zone || 'General'}
+                  </div>
+                  <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
+                    <CCTVTimestamp />
                   </div>
                 </div>
               </div>
@@ -391,7 +398,7 @@ export function AlertsTab() {
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_360px]">
       <div className="flex flex-col gap-4">
-        <UnknownQueue />
+        <LiveCameraFeeds />
         <LogTable />
       </div>
       <AlertSidebar />
