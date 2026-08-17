@@ -127,6 +127,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+@app.post("/api/internal/notify_update")
+async def notify_update():
+    """Endpoint for detection pipeline to notify about new detections."""
+    import asyncio
+    asyncio.create_task(manager.broadcast("kpis", {"refresh": True}))
+    asyncio.create_task(manager.broadcast("alerts", {"refresh": True}))
+    return {"status": "ok"}
+
+
 # ==================== Health Check ====================
 
 @app.get("/health")

@@ -130,6 +130,20 @@ class DetectionLogger:
             # Write to Database (if connected)
             if self.db_session:
                 self._write_to_db(camera_id, identity, confidence, bbox, now)
+                
+                # Notify backend to trigger WebSocket updates
+                try:
+                    import urllib.request
+                    import os
+                    api_url = os.environ.get("API_URL", "http://localhost:8000")
+                    req = urllib.request.Request(
+                        f"{api_url.rstrip('/')}/api/internal/notify_update", 
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=0.5) as f:
+                        pass
+                except Exception:
+                    pass
 
         print(f"[{row['timestamp']}] {camera_id} {row['bbox']} -> {identity} ({confidence:.4f})")
 
