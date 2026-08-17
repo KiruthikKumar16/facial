@@ -151,6 +151,15 @@ class DetectionLogger:
         """Write detection to PostgreSQL database."""
         try:
             # Import here to avoid circular dependency
+            import sys
+            import os
+            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            backend_dir = os.path.join(parent_dir, "backend")
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+            if backend_dir not in sys.path:
+                sys.path.insert(0, backend_dir)
+                
             from backend.models import Detection, DetectionStatus as DetectionStatusEnum
             
             # Determine profile and status
