@@ -25,7 +25,7 @@ class InsightFaceDetector:
         self.model_name = model_name
         providers = ['CUDAExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
 
-        self.app: Any = FaceAnalysis(name=model_name, providers=providers)
+        self.app: Any = FaceAnalysis(name=model_name, providers=providers, allowed_modules=['detection', 'recognition'])
         self.app.prepare(ctx_id=0 if use_gpu else -1, det_size=det_size)
 
         cv2_any: Any = cv2
