@@ -16,8 +16,8 @@ from typing import Any, Deque, Dict, List, Optional, Tuple, cast
 import logging
 
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv(usecwd=True))
 except ImportError:
     pass
 
