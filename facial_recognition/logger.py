@@ -132,7 +132,9 @@ class DetectionLogger:
         date_str = now.strftime('%Y-%m-%d')
 
         left, top, right, bottom = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
-        key = (camera_id, identity, (left, top, right, bottom))
+        
+        # Track by camera and identity to suppress spam when the person moves slightly
+        key = (camera_id, identity)
 
         with self.lock:
             # purge old dedup entries occasionally
@@ -141,7 +143,7 @@ class DetectionLogger:
             last = self._dedup.get(key)
             if last is not None and (now_ts - last) < self._dedup_window:
                 # duplicate within window; skip logging
-                print(f"[SUPPRESS] {now.isoformat()} {camera_id} {key[2]} -> {identity} ({confidence:.4f})")
+                print(f"[SUPPRESS] {now.isoformat()} {camera_id} [{left}, {top}, {right}, {bottom}] -> {identity} ({confidence:.4f})")
                 return
 
             # mark as seen
