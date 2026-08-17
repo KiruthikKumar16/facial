@@ -346,7 +346,7 @@ def main():
     threshold = float(cfg.get('similarity_threshold', 0.60))
     gallery_path = str(project_root / cfg.get('gallery_path', 'known_faces/gallery.npz'))
     log_path = str(project_root / cfg.get('log_file', 'detections.csv'))
-    database_url = cfg.get('database_url', None)
+    database_url = os.environ.get('DATABASE_URL', cfg.get('database_url', None))
 
     # detector and recognizer
     detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
