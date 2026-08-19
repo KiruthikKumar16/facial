@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class CameraCapture(threading.Thread):
     def __init__(self, source: str | int, camera_id: str, frame_callback: Callable[[str, Any], None], reconnect_interval: int) -> None:
         super().__init__(daemon=True)
-        self.source = 1
+        self.source = 0
         self.camera_id = camera_id
         self.frame_callback: Callable[[str, Any], None] = frame_callback
         self.reconnect_interval = reconnect_interval

@@ -13,7 +13,7 @@ class PendingSaver:
     Saves a .npz per pending item under the provided directory.
     """
 
-    DUPLICATE_THRESHOLD = 0.90
+    DUPLICATE_THRESHOLD = 0.60
     DEFAULT_UNKNOWN_LABEL_PREFIX = 'Person'
 
     def __init__(self, base_dir: str | Path = 'pending') -> None:

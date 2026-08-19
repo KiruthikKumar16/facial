@@ -20,14 +20,14 @@ This system processes live RTSP and webcam video feeds on local edge devices, ex
 - **Database**: PostgreSQL (Supabase) with the `pgvector` extension
 - **Deployment**: Vercel (Frontend), Render (Backend), Local PC (Edge CV Pipeline)
 
-## How It Works
+## Architecture
 The architecture utilizes a distributed Edge-to-Cloud pattern:
 1. **Edge CV Node (`facial_recognition/`)**: A local Python process captures live video frames. `InsightFace` detects faces, extracts the 512-dim embedding tensors, and identifies known profiles. It synchronously writes the event to a local CSV archive while async-POSTing the data to the Cloud API.
 2. **Cloud API (`backend/`)**: A FastAPI server running on Render ingests edge events and inserts them into Supabase via SQLAlchemy. It also securely houses the ONNX models in memory during its `lifespan` to process manual image uploads (Forensic Search) without taxing the edge nodes.
 3. **Cloud Database (`Supabase`)**: Stores relational metadata (Profiles, Cameras, Alerts) and uses `pgvector` to index the 512-dim embedding arrays, allowing for mathematical cosine distance queries.
 4. **Cloud Dashboard (`facial-recognition-dashboard/`)**: A Next.js application that fetches historical aggregated analytics via REST and listens to FastAPI WebSockets for live React Query invalidations, ensuring the UI is perpetually up-to-date.
 
-## What I Built
+## I Built
 I served as the sole Full-Stack and Machine Learning Engineer for this project. I designed the 3-tier architecture, integrated the `InsightFace` ONNX models into both the local edge pipeline and the FastAPI backend, and wrote the raw `pgvector` SQL statements to handle vector similarity searches. I built the entire Next.js frontend, utilizing React Query and WebSockets to create a seamless, real-time command center, and deployed the distributed system across Vercel, Render, and Supabase.
 
 ## Challenges & Solutions
@@ -62,6 +62,31 @@ I served as the sole Full-Stack and Machine Learning Engineer for this project. 
    cd facial_recognition
    python run.py
    ```
+## Commands Cheat Sheet
+
+### 1. Naming Unknown Faces (Gallery Management)
+Run these from inside the `facial_recognition/` folder:
+- **`python review_pending.py`**: Reviews unknown faces saved in the `pending/` folder, prompts you for their name via a GUI, and adds them to the known gallery.
+- **`python enroll.py`**: Rebuilds the `gallery.npz` file from scratch using images placed inside `known_faces/`.
+
+### 2. Running the Edge Cameras
+Run these from inside the `facial_recognition/` folder:
+- **`python main_cpu.py`**: Runs the highly-optimized camera script tuned for laptops/CPUs (skips frames, limits threads).
+- **`python run.py`**: The standard camera execution script, best used with a dedicated NVIDIA GPU.
+- **`python benchmark_detector.py`**: Tests your webcam and prints out the FPS and latency of the AI models.
+
+### 3. Running the FastAPI Backend
+- **`.\scripts\run-backend.ps1`** (from root): A PowerShell wrapper to launch the Python backend.
+- **`uvicorn main:app --reload`** (from `backend/`): Manually starts the FastAPI server on `localhost:8000`.
+
+### 4. Running the Next.js Dashboard
+- **`.\scripts\run-frontend.ps1`** (from root): A PowerShell wrapper to launch the web interface.
+- **`pnpm dev`** (from `facial-recognition-dashboard/`): Manually starts the Next.js UI on `localhost:3000`.
+
+### 5. Setup & Validation
+Run these from the root folder:
+- **`.\scripts\setup-all.ps1`**: Automatically creates Python virtual environments, installs requirements, and runs `pnpm install` for the frontend.
+- **`.\scripts\DEPLOYMENT_CHECKLIST.ps1`**: A helper script to quickly verify that all `.env` variables are correctly set before deployment.
 
 ## Links
 - **GitHub Repository**: [Your Link Here]
