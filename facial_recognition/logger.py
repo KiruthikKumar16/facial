@@ -54,46 +54,62 @@ class DetectionLogger:
         self.worker.start()
 
     def _worker_loop(self):
-        """Background thread to handle synchronous database writes and HTTP requests."""
-        db_session = None
-        if self.db_url:
-            try:
-                from sqlalchemy import create_engine
-                from sqlalchemy.orm import sessionmaker
-                engine = create_engine(self.db_url, echo=False)
-                SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-                db_session = SessionLocal()
-                logger.info("✓ Database connection established for real-time logging (Worker)")
-            except Exception as e:
-                logger.warning(f"⚠ Could not connect to database: {e}. Falling back to CSV only.")
-        
+        """Background thread to handle HTTP requests."""
         import urllib.request
+        import json
+        import time
         import os
         api_url = os.environ.get("API_URL", "http://localhost:8000").rstrip('/')
+        api_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
+        
+        # Internal queue to handle retries
+        retry_queue = []
         
         while not self._stop_event.is_set():
-            try:
-                item = self.log_queue.get(timeout=1.0)
-            except queue.Empty:
+            items = []
+            
+            # Drain queue
+            while True:
+                try:
+                    item = self.log_queue.get_nowait()
+                    items.append(item)
+                    self.log_queue.task_done()
+                except queue.Empty:
+                    break
+            
+            items = retry_queue + items
+            retry_queue = []
+            
+            if not items:
+                time.sleep(1.0)
                 continue
                 
-            camera_id, identity, confidence, bbox, now = item
-            
-            if db_session:
+            for item in items:
+                camera_id, identity, confidence, bbox, now = item
+                
+                payload = {
+                    "camera_id": camera_id,
+                    "identity": identity,
+                    "confidence": float(confidence),
+                    "bbox": [int(x) for x in bbox],
+                    "timestamp": now.isoformat()
+                }
+                
                 try:
-                    self._write_to_db(db_session, camera_id, identity, confidence, bbox, now)
-                    
-                    # Notify backend to trigger WebSocket updates
-                    req = urllib.request.Request(f"{api_url}/api/internal/notify_update", method="POST")
-                    with urllib.request.urlopen(req, timeout=1.5) as f:
+                    req = urllib.request.Request(
+                        f"{api_url}/api/detections",
+                        data=json.dumps(payload).encode('utf-8'),
+                        headers={'Content-Type': 'application/json', 'X-API-Key': api_key},
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(req, timeout=2.0) as f:
                         pass
                 except Exception as e:
-                    logger.warning(f"Background DB/API task error: {e}")
+                    logger.warning(f"Failed to post detection (will retry): {e}")
+                    retry_queue.append(item)
                     
-            self.log_queue.task_done()
-            
-        if db_session:
-            db_session.close()
+            if retry_queue:
+                time.sleep(2.0) # Simple backoff before next batch
 
     def _open_for_date(self, date_str: str):
         if self.current_date == date_str and self.current_file is not None:
@@ -172,76 +188,7 @@ class DetectionLogger:
 
         print(f"[{row['timestamp']}] {camera_id} {row['bbox']} -> {identity} ({confidence:.4f})")
 
-    def _write_to_db(self, db_session, camera_id: str, identity: str, confidence: float, bbox: list[int], timestamp: datetime) -> None:
-        """Write detection to PostgreSQL database."""
-        try:
-            # Import here to avoid circular dependency
-            import sys
-            import os
-            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            backend_dir = os.path.join(parent_dir, "backend")
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-            if backend_dir not in sys.path:
-                sys.path.insert(0, backend_dir)
-                
-            from backend.models import Detection, DetectionStatus as DetectionStatusEnum, Camera
-            
-            # Ensure camera exists to prevent ForeignKeyViolation
-            if camera_id not in self._ensured_cameras:
-                existing_cam = db_session.query(Camera).filter_by(id=camera_id).first()
-                if not existing_cam:
-                    new_cam = Camera(id=camera_id, name=camera_id, status="online")
-                    db_session.add(new_cam)
-                    db_session.commit()
-                self._ensured_cameras.add(camera_id)
-            
-            # Determine profile and status
-            profile_id = None
-            status = DetectionStatusEnum.unknown
-            
-            if self.profile_lookup and identity != "Unknown":
-                profile_id = self.profile_lookup(identity)
-                if profile_id:
-                    status = DetectionStatusEnum.recognized
-                    
-                    # Ensure profile exists to prevent ForeignKeyViolation
-                    if profile_id not in self._ensured_profiles:
-                        from backend.models import Profile, ProfileRole
-                        existing_profile = db_session.query(Profile).filter_by(id=profile_id).first()
-                        if not existing_profile:
-                            new_profile = Profile(id=profile_id, name=identity, role=ProfileRole.employee)
-                            db_session.add(new_profile)
-                            db_session.commit()
-                        self._ensured_profiles.add(profile_id)
-            elif identity == "Unknown":
-                status = DetectionStatusEnum.unknown
-            
-            # Create detection record
-            detection = Detection(
-                id=str(uuid4()),
-                camera_id=camera_id,
-                profile_id=profile_id,
-                timestamp=timestamp,
-                status=status,
-                confidence=confidence,
-                bbox=f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]",
-                liveness_score=0.0,
-                age=None,
-                gender="unknown",
-                wearing_mask=False,
-                wearing_glasses=False,
-            )
-            
-            db_session.add(detection)
-            db_session.commit()
-            
-        except Exception as e:
-            logger.warning(f"Failed to write detection to database: {e}")
-            try:
-                db_session.rollback()
-            except Exception:
-                pass
+
 
     def close(self) -> None:
         self._stop_event.set()

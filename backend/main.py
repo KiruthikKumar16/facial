@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, date
 from typing import Optional, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -41,7 +41,9 @@ from schemas import (
     DuplicateCandidateResponse, TrajectoryNodeResponse, SubjectTrajectoryResponse,
     FootfallBucketResponse, DemographicSliceResponse, SystemKpisFullResponse,
     ForensicMatchFullResponse, AttendanceRecordFullResponse,
-    AlertAcknowledgeRequest, ProfileMergeRequest, ProfileCreateRequest
+    ForensicMatchFullResponse, AttendanceRecordFullResponse,
+    AlertAcknowledgeRequest, ProfileMergeRequest, ProfileCreateRequest,
+    DetectionCreateRequest
 )
 from websocket import manager
 
@@ -128,13 +130,118 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+def verify_edge_node(x_api_key: str = Header(..., alias="X-API-Key")):
+    expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
+    if x_api_key != expected_key:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return x_api_key
+
+
 @app.post("/api/internal/notify_update")
-async def notify_update():
+async def notify_update(api_key: str = Depends(verify_edge_node)):
     """Endpoint for detection pipeline to notify about new detections."""
     import asyncio
     asyncio.create_task(manager.broadcast("kpis", {"refresh": True}))
     asyncio.create_task(manager.broadcast("alerts", {"refresh": True}))
     return {"status": "ok"}
+
+
+@app.get("/api/internal/gallery")
+def get_gallery(
+    db: Session = Depends(get_db),
+    api_key: str = Depends(verify_edge_node)
+):
+    """Get active gallery embeddings for edge nodes."""
+    profiles = db.query(Profile).filter(Profile.embedding_count > 0).all()
+    labels = []
+    embeddings = []
+    for profile in profiles:
+        for emb in profile.embeddings:
+            labels.append(profile.name)
+            embeddings.append(emb.vector)
+    return {"labels": labels, "embeddings": embeddings}
+
+
+@app.post("/api/detections", response_model=DetectionResponse)
+async def create_detection(
+    req: DetectionCreateRequest,
+    db: Session = Depends(get_db),
+    api_key: str = Depends(verify_edge_node)
+):
+    """Endpoint for edge node to push detection logs."""
+    import asyncio
+    
+    camera = db.query(Camera).filter(Camera.id == req.camera_id).first()
+    if not camera:
+        camera = Camera(id=req.camera_id, name=req.camera_id, status=CameraStatusEnum.online)
+        db.add(camera)
+        db.commit()
+        db.refresh(camera)
+        
+    profile_id = None
+    status = DetectionStatusEnum.unknown
+    profile = None
+    if req.identity != "Unknown":
+        profile = db.query(Profile).filter(Profile.name == req.identity).first()
+        if profile:
+            profile_id = profile.id
+            status = DetectionStatusEnum.recognized
+        else:
+            new_id = str(uuid.uuid4())
+            profile = Profile(id=new_id, name=req.identity, role=ProfileRoleEnum.employee)
+            db.add(profile)
+            db.commit()
+            db.refresh(profile)
+            profile_id = new_id
+            status = DetectionStatusEnum.recognized
+            
+    detection = Detection(
+        id=str(uuid.uuid4()),
+        camera_id=req.camera_id,
+        profile_id=profile_id,
+        timestamp=req.timestamp,
+        status=status,
+        confidence=req.confidence,
+        bbox=f"[{int(req.bbox[0])}, {int(req.bbox[1])}, {int(req.bbox[2])}, {int(req.bbox[3])}]",
+        liveness_score=0.0,
+        age=None,
+        gender="unknown",
+        wearing_mask=False,
+        wearing_glasses=False,
+    )
+    db.add(detection)
+    db.commit()
+    db.refresh(detection)
+    
+    # Broadcast actual payload for WebSocket updates
+    tones = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
+    log_response = {
+        "type": "new_detection",
+        "data": {
+            "id": detection.id,
+            "camera_id": detection.camera_id,
+            "camera_name": camera.name,
+            "timestamp": detection.timestamp.isoformat() + "Z",
+            "status": detection.status.value,
+            "confidence": detection.confidence,
+            "liveness_score": detection.liveness_score,
+            "profile_id": detection.profile_id,
+            "profile_name": profile.name if profile else None,
+            "role": profile.role.value if profile else None,
+            "age": detection.age or 0,
+            "gender": detection.gender.value if detection.gender else "unknown",
+            "wearing_mask": detection.wearing_mask,
+            "wearing_glasses": detection.wearing_glasses,
+            "snapshot_tone": tones[hash(detection.id) % len(tones)],
+        }
+    }
+    
+    # Broadcast to alerts channel for frontend to prepend
+    asyncio.create_task(manager.broadcast("alerts", log_response))
+    # Also trigger KPI refresh (frontend can still fetch this or we can push it)
+    asyncio.create_task(manager.broadcast("kpis", {"data": {"refresh": True}}))
+    
+    return DetectionResponse.from_orm(detection)
 
 
 # ==================== Health Check ====================

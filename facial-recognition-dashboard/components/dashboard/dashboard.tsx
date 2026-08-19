@@ -11,7 +11,7 @@ import { SystemTab } from './tabs/system-tab'
 import { ErrorBoundary } from '@/components/ui/error-boundary'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import { connectAlertsWebSocket, connectCamerasWebSocket, connectKpisWebSocket } from '@/lib/api'
+import { connectAlertsWebSocket, connectCamerasWebSocket, connectKpisWebSocket, adaptFaceLog, adaptUnknownCapture } from '@/lib/api'
 import {
   Siren,
   Search,
@@ -33,15 +33,36 @@ export function Dashboard() {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    const wsAlerts = connectAlertsWebSocket(() => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      queryClient.invalidateQueries({ queryKey: ['face-logs'] })
-      queryClient.invalidateQueries({ queryKey: ['unknown-captures'] })
+    const wsAlerts = connectAlertsWebSocket((data) => {
+      if (data && data.id) {
+        try {
+          const newLog = adaptFaceLog(data)
+          queryClient.setQueryData(['face-logs'], (oldData: any) => {
+            if (!oldData) return [newLog]
+            return [newLog, ...oldData].slice(0, 100)
+          })
+          
+          if (newLog.status === 'unknown') {
+            const newUnknown = adaptUnknownCapture(data)
+            queryClient.setQueryData(['unknown-captures'], (oldData: any) => {
+              if (!oldData) return [newUnknown]
+              return [newUnknown, ...oldData].slice(0, 100)
+            })
+          }
+        } catch (e) {
+          console.error('Failed to adapt websocket payload', e)
+        }
+        queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['alerts'] })
+        queryClient.invalidateQueries({ queryKey: ['face-logs'] })
+        queryClient.invalidateQueries({ queryKey: ['unknown-captures'] })
+      }
     })
-    const wsCameras = connectCamerasWebSocket(() => {
+    const wsCameras = connectCamerasWebSocket((data) => {
       queryClient.invalidateQueries({ queryKey: ['cameras'] })
     })
-    const wsKpis = connectKpisWebSocket(() => {
+    const wsKpis = connectKpisWebSocket((data) => {
       queryClient.invalidateQueries({ queryKey: ['kpis'] })
     })
 

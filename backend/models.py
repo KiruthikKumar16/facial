@@ -124,7 +124,7 @@ class Detection(Base):
     camera_id = Column(String, ForeignKey("cameras.id"), nullable=False, index=True)
     profile_id = Column(String, ForeignKey("profiles.id"), nullable=True, index=True)
     timestamp = Column(DateTime, nullable=False, index=True)
-    status = Column(SQLEnum(DetectionStatus), default=DetectionStatus.unknown)
+    status = Column(SQLEnum(DetectionStatus), default=DetectionStatus.unknown, index=True)
     confidence = Column(Float, default=0.0)
     liveness_score = Column(Float, default=0.0)
     age = Column(Integer)

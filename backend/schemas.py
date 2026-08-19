@@ -97,6 +97,14 @@ class DetectionBase(BaseModel):
     wearing_glasses: bool = False
 
 
+class DetectionCreateRequest(BaseModel):
+    camera_id: str
+    identity: str
+    confidence: float
+    bbox: List[int]
+    timestamp: datetime
+
+
 class DetectionResponse(DetectionBase):
     id: str
     camera: Optional[CameraResponse] = None
