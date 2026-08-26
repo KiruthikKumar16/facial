@@ -12,10 +12,11 @@ import numpy as np
 import cv2
 
 
-PENDING_DIR = Path('pending')
-GALLERY_PATH = Path('known_faces/gallery.npz')
-KNOWN_DIR = Path('known_faces')
-REUSE_NAME_THRESHOLD = 0.95
+PROJECT_ROOT = Path(__file__).resolve().parent
+PENDING_DIR = PROJECT_ROOT / 'pending'
+GALLERY_PATH = PROJECT_ROOT / 'known_faces' / 'gallery.npz'
+KNOWN_DIR = PROJECT_ROOT / 'known_faces'
+REUSE_NAME_THRESHOLD = 0.35
 DEFAULT_UNKNOWN_LABEL_PREFIX = 'Person'
 
 
@@ -82,6 +83,7 @@ def review() -> None:
         return
 
     recent_names: Dict[str, np.ndarray] = {}
+    auto_accept_names = set()
     for item in items:
         with np.load(item, allow_pickle=True) as data:
             img = data['image']
@@ -90,14 +92,24 @@ def review() -> None:
 
         suggested_name = find_similar_pending_name(emb, recent_names)
         if suggested_name is not None:
-            print(f'Suggested name for {item.name} based on prior review: {suggested_name}')
-            use_suggested = input('Use suggested name? [Y/n]: ').strip().lower()
-            if use_suggested in ('', 'y', 'yes'):
+            if suggested_name in auto_accept_names:
                 name = suggested_name
+                print(f'Auto-accepting {item.name} as {name}')
             else:
-                name = input(
-                    f'Current default label is "{label}". Enter a new name to change it, or press Enter to keep it: '
-                ).strip()
+                win = 'review'
+                cv2.imshow(win, img)
+                print(f'Suggested name for {item.name} based on prior review: {suggested_name}')
+                print("Press 'y' or Enter in the image window to accept (this covers all future matches), or any other key to enter a new name.")
+                key = cv2.waitKey(0) & 0xFF
+                cv2.destroyWindow(win)
+                
+                if key in (13, 10, ord('y'), ord('Y'), ord(' ')):
+                    auto_accept_names.add(suggested_name)
+                    name = suggested_name
+                else:
+                    name = input(
+                        f'Current default label is "{label}". Enter a new name in terminal to change it, or press Enter to keep it: '
+                    ).strip()
                 if not name:
                     name = label
         else:

@@ -1,11 +1,9 @@
 # Camera and recognition settings
-webcam_index: 1
+webcam_index: 0
 rtsp_urls:
-  - rtsp://username:password@camera1.example.com:554/stream
-  - rtsp://username:password@camera2.example.com:554/stream
 
 # Cosine similarity threshold for identity matching
-similarity_threshold: 0.60
+similarity_threshold: 0.35
 
 # Use GPU backend when available. Install onnxruntime-gpu separately for GPU support.
 use_gpu: false
@@ -15,12 +13,18 @@ inference_frame_width: 640
 inference_frame_height: 640
 
 # CPU-only tuning: smaller input, more frame skipping, and faster detection path.
+# Override at runtime: python facial_recognition/main_cpu.py -r 480 --max
 cpu_inference_frame_width: 160
 cpu_inference_frame_height: 160
 cpu_frame_skip: 4
 cpu_recognition_interval: 2
-cpu_use_fast_detector: true
+cpu_use_fast_detector: false
 cpu_detector_model: buffalo_s
+cpu_tier: auto
+
+# Webcam capture size (override with --cam-res on CLI)
+camera_width: 640
+camera_height: 480
 
 # Known faces enrollment directory and saved gallery file path
 known_faces_dir: known_faces

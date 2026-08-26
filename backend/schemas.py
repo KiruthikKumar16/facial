@@ -103,6 +103,8 @@ class DetectionCreateRequest(BaseModel):
     confidence: float
     bbox: List[int]
     timestamp: datetime
+    age: Optional[int] = None
+    gender: Optional[str] = None
 
 
 class DetectionResponse(DetectionBase):
@@ -245,7 +247,7 @@ class SubjectTrajectoryResponse(BaseModel):
 # ==================== Footfall ====================
 
 class FootfallBucketResponse(BaseModel):
-    hour: int
+    hour: str
     detections: int
     recognized: int
     unknown: int
@@ -308,6 +310,7 @@ class ProfileMergeRequest(BaseModel):
     profileAId: str
     profileBId: str
     keepProfile: Optional[str] = None
+    keepProfileId: Optional[str] = None
     deleteMerged: Optional[bool] = True
 
 

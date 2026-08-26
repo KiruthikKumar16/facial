@@ -55,6 +55,96 @@ logger = logging.getLogger(__name__)
 # Global state for AI models
 ai_models = {}
 
+AVATAR_TONES = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
+
+
+def snapshot_tone_for(key: str) -> str:
+    return AVATAR_TONES[hash(key) % len(AVATAR_TONES)]
+
+
+def is_pending_unknown_identity(identity: str) -> bool:
+    if not identity or identity == "Unknown":
+        return True
+    if identity.startswith("Person "):
+        parts = identity.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            return True
+    return False
+
+
+def parse_gender(value: Optional[str]) -> GenderEnum:
+    if not value:
+        return GenderEnum.unknown
+    normalized = value.lower()
+    if normalized == GenderEnum.male.value:
+        return GenderEnum.male
+    if normalized == GenderEnum.female.value:
+        return GenderEnum.female
+    return GenderEnum.unknown
+
+
+def resolve_detection_identity(db: Session, identity: str):
+    """Return (profile, profile_id, status) for an edge identity string."""
+    if is_pending_unknown_identity(identity):
+        return None, None, DetectionStatusEnum.unknown
+
+    profile = db.query(Profile).filter(Profile.name == identity).first()
+    if profile:
+        if profile.role in (ProfileRoleEnum.blacklist, ProfileRoleEnum.watchlist):
+            status = DetectionStatusEnum.flagged
+        else:
+            status = DetectionStatusEnum.recognized
+        return profile, profile.id, status
+
+    new_id = str(uuid.uuid4())
+    profile = Profile(id=new_id, name=identity, role=ProfileRoleEnum.visitor)
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile, new_id, DetectionStatusEnum.recognized
+
+
+def alert_meta_for_detection(
+    status: DetectionStatusEnum,
+    profile: Optional[Profile],
+    identity: str,
+) -> tuple[bool, Optional[str], Optional[str]]:
+    if status == DetectionStatusEnum.unknown:
+        label = identity if identity != "Unknown" else "unknown subject"
+        return True, "medium", f"Unknown face detected ({label})"
+    if profile and profile.role == ProfileRoleEnum.blacklist:
+        return True, "critical", f"Blacklist match: {profile.name}"
+    if profile and profile.role == ProfileRoleEnum.watchlist:
+        return True, "high", f"Watchlist match: {profile.name}"
+    if status == DetectionStatusEnum.flagged:
+        name = profile.name if profile else identity
+        return True, "high", f"Flagged identity: {name}"
+    return False, None, None
+
+
+def build_face_log_payload(
+    detection: Detection,
+    camera: Camera,
+    profile: Optional[Profile],
+) -> dict:
+    return {
+        "id": detection.id,
+        "camera_id": detection.camera_id,
+        "camera_name": camera.name,
+        "timestamp": detection.timestamp.isoformat() + "Z",
+        "status": detection.status.value,
+        "confidence": detection.confidence,
+        "liveness_score": detection.liveness_score,
+        "profile_id": detection.profile_id,
+        "profile_name": profile.name if profile else None,
+        "role": profile.role.value if profile else None,
+        "age": detection.age or 0,
+        "gender": detection.gender.value if detection.gender else "unknown",
+        "wearing_mask": detection.wearing_mask,
+        "wearing_glasses": detection.wearing_glasses,
+        "snapshot_tone": snapshot_tone_for(detection.id),
+    }
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager."""
@@ -98,7 +188,9 @@ async def extract_face_embedding(file: UploadFile) -> Optional[np.ndarray]:
             
         # Return largest face embedding (bbox is [x0, y0, x1, y1])
         faces = sorted(results, key=lambda f: (f['bbox'][2]-f['bbox'][0]) * (f['bbox'][3]-f['bbox'][1]), reverse=True)
-        return faces[0]['embedding']
+        face = faces[0]
+        embedding = detector.extract_embedding(img, face)
+        return embedding
     except Exception as e:
         logger.error(f"Error extracting embedding: {e}")
         return None
@@ -179,22 +271,12 @@ async def create_detection(
         db.refresh(camera)
         
     profile_id = None
-    status = DetectionStatusEnum.unknown
     profile = None
-    if req.identity != "Unknown":
-        profile = db.query(Profile).filter(Profile.name == req.identity).first()
-        if profile:
-            profile_id = profile.id
-            status = DetectionStatusEnum.recognized
-        else:
-            new_id = str(uuid.uuid4())
-            profile = Profile(id=new_id, name=req.identity, role=ProfileRoleEnum.employee)
-            db.add(profile)
-            db.commit()
-            db.refresh(profile)
-            profile_id = new_id
-            status = DetectionStatusEnum.recognized
-            
+    profile, profile_id, status = resolve_detection_identity(db, req.identity)
+
+    if profile is not None:
+        profile.last_seen = req.timestamp
+
     detection = Detection(
         id=str(uuid.uuid4()),
         camera_id=req.camera_id,
@@ -204,43 +286,36 @@ async def create_detection(
         confidence=req.confidence,
         bbox=f"[{int(req.bbox[0])}, {int(req.bbox[1])}, {int(req.bbox[2])}, {int(req.bbox[3])}]",
         liveness_score=0.0,
-        age=None,
-        gender="unknown",
+        age=req.age,
+        gender=parse_gender(req.gender),
         wearing_mask=False,
         wearing_glasses=False,
     )
     db.add(detection)
     db.commit()
     db.refresh(detection)
-    
-    # Broadcast actual payload for WebSocket updates
-    tones = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
-    log_response = {
-        "type": "new_detection",
-        "data": {
-            "id": detection.id,
-            "camera_id": detection.camera_id,
-            "camera_name": camera.name,
-            "timestamp": detection.timestamp.isoformat() + "Z",
-            "status": detection.status.value,
-            "confidence": detection.confidence,
-            "liveness_score": detection.liveness_score,
-            "profile_id": detection.profile_id,
-            "profile_name": profile.name if profile else None,
-            "role": profile.role.value if profile else None,
-            "age": detection.age or 0,
-            "gender": detection.gender.value if detection.gender else "unknown",
-            "wearing_mask": detection.wearing_mask,
-            "wearing_glasses": detection.wearing_glasses,
-            "snapshot_tone": tones[hash(detection.id) % len(tones)],
-        }
-    }
-    
-    # Broadcast to alerts channel for frontend to prepend
-    asyncio.create_task(manager.broadcast("alerts", log_response))
-    # Also trigger KPI refresh (frontend can still fetch this or we can push it)
-    asyncio.create_task(manager.broadcast("kpis", {"data": {"refresh": True}}))
-    
+
+    should_alert, severity, reason = alert_meta_for_detection(status, profile, req.identity)
+    if should_alert and severity and reason:
+        alert = Alert(
+            id=str(uuid.uuid4()),
+            detection_id=detection.id,
+            camera_id=req.camera_id,
+            profile_id=profile_id,
+            timestamp=req.timestamp,
+            severity=severity,
+            reason=reason,
+            acknowledged=False,
+        )
+        db.add(alert)
+        db.commit()
+
+    face_log = build_face_log_payload(detection, camera, profile)
+
+    # Broadcast face log directly (frontend expects detection fields at message.data)
+    asyncio.create_task(manager.broadcast("alerts", face_log))
+    asyncio.create_task(manager.broadcast("kpis", {"refresh": True}))
+
     return DetectionResponse.from_orm(detection)
 
 
@@ -378,7 +453,7 @@ def merge_profiles(
     db: Session = Depends(get_db)
 ):
     """Merge two profiles."""
-    keep_id = req.keepProfile or req.profileAId
+    keep_id = req.keepProfile or req.keepProfileId or req.profileAId
     delete_id = req.profileBId if keep_id == req.profileAId else req.profileAId
     
     keep_profile = db.query(Profile).filter(Profile.id == keep_id).first()
@@ -419,7 +494,6 @@ def get_logs(
     ).limit(limit).offset(offset).all()
     
     results = []
-    tones = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
     
     for i, det in enumerate(detections):
         results.append(FaceLogResponse(
@@ -437,7 +511,7 @@ def get_logs(
             gender=det.gender.value if det.gender else "unknown",
             wearing_mask=det.wearing_mask,
             wearing_glasses=det.wearing_glasses,
-            snapshot_tone=tones[i % len(tones)],
+            snapshot_tone=snapshot_tone_for(det.id),
         ))
     
     return results
@@ -456,7 +530,6 @@ def get_alerts(
     ).limit(limit).all()
     
     results = []
-    tones = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
     
     for i, alert in enumerate(alerts):
         results.append(AlertResponse(
@@ -472,7 +545,7 @@ def get_alerts(
             role=alert.profile.role.value if alert.profile else "unknown",
             confidence=alert.detection.confidence if alert.detection else 0.0,
             acknowledged=alert.acknowledged,
-            snapshot_tone=tones[i % len(tones)],
+            snapshot_tone=snapshot_tone_for(alert.id),
         ))
     
     return results
@@ -594,8 +667,8 @@ async def run_forensic_search(
 def get_duplicates(db: Session = Depends(get_db)):
     """Find duplicate profiles using pgvector."""
     sql = text("""
-        SELECT e1.profile_id as p1_id, p1.name as p1_name, p1.created_at as p1_created,
-               e2.profile_id as p2_id, p2.name as p2_name, p2.created_at as p2_created,
+        SELECT e1.profile_id as p1_id, p1.name as p1_name, p1.role as p1_role, p1.created_at as p1_created,
+               e2.profile_id as p2_id, p2.name as p2_name, p2.role as p2_role, p2.created_at as p2_created,
                1 - (e1.vector <=> e2.vector) as similarity
         FROM embeddings e1
         JOIN embeddings e2 ON e1.id < e2.id 
@@ -617,13 +690,17 @@ def get_duplicates(db: Session = Depends(get_db)):
         seen.add(pair)
         
         candidates.append(DuplicateCandidateResponse(
+            id=f"{row.p1_id}:{row.p2_id}",
             profileAId=row.p1_id,
             profileAName=row.p1_name,
-            profileAEnrolled=row.p1_created.isoformat(),
+            profileARole=row.p1_role.value if hasattr(row.p1_role, 'value') else str(row.p1_role),
+            profileAAvatarTone=snapshot_tone_for(row.p1_id),
             profileBId=row.p2_id,
             profileBName=row.p2_name,
-            profileBEnrolled=row.p2_created.isoformat(),
-            similarity_score=float(row.similarity)
+            profileBRole=row.p2_role.value if hasattr(row.p2_role, 'value') else str(row.p2_role),
+            profileBAvatarTone=snapshot_tone_for(row.p2_id),
+            cosineSimilarity=float(row.similarity),
+            sharedSightings=0,
         ))
     return candidates
 
@@ -643,10 +720,12 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
     path = []
     for d in detections:
         path.append(TrajectoryNodeResponse(
-            timestamp=d.timestamp.isoformat(),
             cameraId=d.camera_id,
             cameraName=d.camera.name if d.camera else "Unknown",
-            zone=d.camera.zone if d.camera else "General"
+            zone=d.camera.zone if d.camera else "General",
+            timestamp=d.timestamp,
+            confidence=d.confidence,
+            snapshotTone=snapshot_tone_for(d.id),
         ))
         
     return SubjectTrajectoryResponse(
@@ -707,7 +786,7 @@ def get_gender_distribution(db: Session = Depends(get_db)):
             slices.append(DemographicSliceResponse(label=gender.value.capitalize(), value=count))
     return slices
 
-@app.get("/api/analytics/attendance", response_model=list[AttendanceRecordResponse])
+@app.get("/api/analytics/attendance", response_model=list[AttendanceRecordFullResponse])
 def get_attendance(days: int = Query(7), db: Session = Depends(get_db)):
     start_time = datetime.utcnow() - timedelta(days=days)
     
@@ -717,29 +796,33 @@ def get_attendance(days: int = Query(7), db: Session = Depends(get_db)):
         Detection.profile_id,
         cast(Detection.timestamp, Date).label('date'),
         func.min(Detection.timestamp).label('check_in'),
-        func.max(Detection.timestamp).label('check_out')
+        func.max(Detection.timestamp).label('check_out'),
+        func.count(Detection.id).label('total_sightings'),
     ).filter(
         Detection.profile_id != None,
         Detection.timestamp >= start_time
     ).group_by(Detection.profile_id, cast(Detection.timestamp, Date)).all()
-    
+
+    if not results:
+        return []
+
     records = []
-    # Fetch all profiles at once to avoid N+1 queries
     profile_ids = [r.profile_id for r in results]
     profiles = {p.id: p for p in db.query(Profile).filter(Profile.id.in_(profile_ids)).all()}
     
     for row in results:
         profile = profiles.get(row.profile_id)
-        if not profile: continue
-        
-        hours = (row.check_out - row.check_in).total_seconds() / 3600.0 if row.check_out != row.check_in else 0
-        records.append(AttendanceRecordResponse(
-            profile_id=profile.id,
-            profile_name=profile.name,
-            date=row.date.isoformat(),
-            check_in=row.check_in.isoformat(),
-            check_out=row.check_out.isoformat(),
-            total_hours=round(hours, 2)
+        if not profile:
+            continue
+        records.append(AttendanceRecordFullResponse(
+            profileId=profile.id,
+            profileName=profile.name,
+            role=profile.role.value,
+            department=profile.department,
+            checkIn=row.check_in,
+            checkOut=row.check_out,
+            totalSightings=int(row.total_sightings or 0),
+            avatarTone=snapshot_tone_for(profile.id),
         ))
     return records
 

@@ -9,12 +9,22 @@ logger = logging.getLogger(__name__)
 
 
 class CameraCapture(threading.Thread):
-    def __init__(self, source: str | int, camera_id: str, frame_callback: Callable[[str, Any], None], reconnect_interval: int) -> None:
+    def __init__(
+        self,
+        source: str | int,
+        camera_id: str,
+        frame_callback: Callable[[str, Any], None],
+        reconnect_interval: int,
+        capture_width: int = 640,
+        capture_height: int = 480,
+    ) -> None:
         super().__init__(daemon=True)
-        self.source = 0
+        self.source = source
         self.camera_id = camera_id
         self.frame_callback: Callable[[str, Any], None] = frame_callback
         self.reconnect_interval = reconnect_interval
+        self.capture_width = capture_width
+        self.capture_height = capture_height
         self._stop_event = threading.Event()
         self._capture: Any = None
 
@@ -52,7 +62,16 @@ class CameraCapture(threading.Thread):
 
     def _connect(self) -> None:
         self._release_capture()
-        self._capture = cv2.VideoCapture(self.source)
+        if isinstance(self.source, int):
+            self._capture = cv2.VideoCapture(self.source, cv2.CAP_DSHOW) if hasattr(cv2, 'CAP_DSHOW') else cv2.VideoCapture(self.source)
+            self._capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_width)
+            self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_height)
+            actual_w = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            logger.info('[%s] webcam resolution requested %dx%d, actual %dx%d', self.camera_id, self.capture_width, self.capture_height, actual_w, actual_h)
+        else:
+            self._capture = cv2.VideoCapture(self.source)
 
     def _release_capture(self) -> None:
         if self._capture is not None:

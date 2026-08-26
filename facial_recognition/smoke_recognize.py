@@ -15,7 +15,8 @@ from insightface.app import FaceAnalysis  # type: ignore[reportMissingTypeStubs]
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 log = logging.getLogger('smoke')
 
-GALLERY = Path('known_faces/gallery.npz')
+PROJECT_ROOT = Path(__file__).resolve().parent
+GALLERY = PROJECT_ROOT / 'known_faces' / 'gallery.npz'
 MODEL = 'buffalo_l'
 
 

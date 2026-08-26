@@ -318,6 +318,27 @@ function adaptMiniProfile(p: any): Pick<Profile, 'id' | 'name' | 'role' | 'avata
 }
 
 export function adaptDuplicateCandidate(raw: any): DuplicateCandidate {
+  if (raw.profileAId && !raw.profileA && !raw.profile_a) {
+    return {
+      id: strOrEmpty(raw.id ?? `${raw.profileAId}:${raw.profileBId}`),
+      profileA: {
+        id: strOrEmpty(raw.profileAId),
+        name: strOrEmpty(raw.profileAName),
+        role: normalizeRole(raw.profileARole),
+        avatarTone: strOrEmpty(raw.profileAAvatarTone) ||
+          AVATAR_TONES[hashString(strOrEmpty(raw.profileAId)) % AVATAR_TONES.length],
+      },
+      profileB: {
+        id: strOrEmpty(raw.profileBId),
+        name: strOrEmpty(raw.profileBName),
+        role: normalizeRole(raw.profileBRole),
+        avatarTone: strOrEmpty(raw.profileBAvatarTone) ||
+          AVATAR_TONES[hashString(strOrEmpty(raw.profileBId)) % AVATAR_TONES.length],
+      },
+      cosineSimilarity: numOrZero(raw.cosine_similarity ?? raw.cosineSimilarity ?? raw.similarity_score),
+      sharedSightings: numOrZero(raw.shared_sightings ?? raw.sharedSightings),
+    }
+  }
   return {
     id: strOrEmpty(raw.id),
     profileA: adaptMiniProfile(raw.profile_a ?? raw.profileA),
@@ -367,7 +388,9 @@ export function adaptForensicMatch(raw: any): ForensicMatch {
     profileId: profileId ?? null,
     profileName: strOrEmpty(raw?.profile_name ?? raw?.profileName),
     role: raw?.role ? normalizeRole(raw.role, null as unknown as ProfileRole) : null,
-    cosineSimilarity: numOrZero(raw?.cosine_similarity ?? raw?.cosineSimilarity),
+    cosineSimilarity: numOrZero(
+      raw?.cosine_similarity ?? raw?.cosineSimilarity ?? raw?.match_score,
+    ),
     lastSeen: strOrEmpty(raw?.last_seen ?? raw?.lastSeen),
     cameraName: strOrEmpty(raw?.camera_name ?? raw?.cameraName),
     avatarTone: strOrEmpty(raw?.avatarTone) ||
@@ -610,7 +633,10 @@ export const mergeProfiles = async (
     profileBId,
     deleteMerged,
   }
-  if (keepProfileId !== undefined) body.keepProfileId = keepProfileId
+  if (keepProfileId !== undefined) {
+    body.keepProfile = keepProfileId
+    body.keepProfileId = keepProfileId
+  }
 
   const response = await fetch(apiUrl('/api/profiles/merge'), {
     method: 'POST',

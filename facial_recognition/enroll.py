@@ -20,7 +20,7 @@ def build_gallery(known_faces_dir: Path, gallery_path: Path, use_gpu: bool, det_
         raise FileNotFoundError(f'Known faces directory not found: {known_faces_dir}')
 
     providers = ['CUDAExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
-    app: Any = cast(Any, FaceAnalysis(name='buffalo_l', providers=providers))
+    app: Any = cast(Any, FaceAnalysis(name='buffalo_s', providers=providers))
     app.prepare(ctx_id=0 if use_gpu else -1, det_size=det_size)
 
     labels: list[str] = []

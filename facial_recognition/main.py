@@ -1,3 +1,4 @@
+import os
 import signal
 import threading
 import time
@@ -8,6 +9,12 @@ import cv2
 import numpy as np
 import yaml
 import logging
+
+try:
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv(usecwd=True))
+except ImportError:
+    pass
 
 cv2: Any = cv2
 yaml: Any = yaml
@@ -20,10 +27,34 @@ from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
 from logger import DetectionLogger
 from recognizer import Recognizer
 from pending import PendingSaver
+from cli import (
+    MAX_CAMERA_HEIGHT,
+    MAX_CAMERA_WIDTH,
+    MAX_DET_SIZE,
+    MAX_MODEL,
+    parse_run_args,
+    resolve_camera_size,
+    resolve_det_size,
+    resolve_model,
+)
+from overlay import draw_text_block
 
 
 class CameraPipeline:
-    def __init__(self, camera_id: str, source: str | int, detector: Any, recognizer: Recognizer, logger: DetectionLogger, frame_size: tuple[int, int], pending_saver: PendingSaver | None = None) -> None:
+    def __init__(
+        self,
+        camera_id: str,
+        source: str | int,
+        detector: Any,
+        recognizer: Recognizer,
+        logger: DetectionLogger,
+        frame_size: tuple[int, int],
+        pending_saver: PendingSaver | None = None,
+        capture_width: int = MAX_CAMERA_WIDTH,
+        capture_height: int = MAX_CAMERA_HEIGHT,
+        reconnect_interval: int = 10,
+        model_name: str = MAX_MODEL,
+    ) -> None:
         self.camera_id = camera_id
         self.source = source
         self.detector = detector
@@ -31,11 +62,21 @@ class CameraPipeline:
         self.logger = logger
         self.pending_saver = pending_saver
         self.frame_size = frame_size
+        self.capture_width = capture_width
+        self.capture_height = capture_height
+        self.model_name = model_name
         self.latest_frame = None
         self.latest_frame_lock = threading.Lock()
         self.last_frame_time = None
         self.fps = 0.0
-        self.capture = CameraCapture(source, camera_id, self.process_frame, reconnect_interval=10)
+        self.capture = CameraCapture(
+            source,
+            camera_id,
+            self.process_frame,
+            reconnect_interval=reconnect_interval,
+            capture_width=capture_width,
+            capture_height=capture_height,
+        )
 
     def start(self) -> None:
         logger.info('Starting CameraPipeline %s (source=%s)', self.camera_id, self.source)
@@ -56,31 +97,36 @@ class CameraPipeline:
         detections: List[Dict[str, Any]] = cast(List[Dict[str, Any]], self.detector.detect(small_frame))
         annotated_frame: Any = frame.copy()
 
+        fh, fw = frame.shape[:2]
+        sh, sw = small_frame.shape[:2]
+        x_scale = fw / sw
+        y_scale = fh / sh
+
         for face in detections:
-            bbox = face['bbox']
-            embedding = face['embedding']
-            identity, confidence = self.recognizer.recognize(embedding)
+            l, t, r, b = face['bbox']
+            l, r = int(l * x_scale), int(r * x_scale)
+            t, b = int(t * y_scale), int(b * y_scale)
+            full_bbox = [l, t, r, b]
+
+            emb = self.detector.extract_embedding(frame, {**face, 'bbox': full_bbox})
+            if emb is None:
+                continue
+
+            identity, confidence = self.recognizer.recognize(emb)
             display_label = identity
             if identity == 'Unknown' and self.pending_saver is not None:
-                # bbox is in small_frame coordinates
-                left, top, right, bottom = bbox
-                left = max(int(left), 0)
-                top = max(int(top), 0)
-                right = max(int(right), 0)
-                bottom = max(int(bottom), 0)
                 try:
-                    face_img = small_frame[top:bottom, left:right].copy()
-                    emb_arr = np.asarray(embedding, dtype=np.float32)
-                    pending_label = self.pending_saver.save(emb_arr, face_img)
+                    cropped = frame[max(0, t):min(fh, b), max(0, l):min(fw, r)].copy()
+                    pending_label = self.pending_saver.save(emb, cropped)
                     if pending_label is not None:
                         display_label = pending_label
                 except Exception:
-                    # don't let pending save errors disrupt pipeline
                     pass
-            self.logger.log_detection(camera_id, bbox, display_label, confidence)
-            self._annotate_frame(annotated_frame, bbox, display_label, confidence, small_frame.shape[:2])
 
-        self._draw_fps(annotated_frame)
+            self.logger.log_detection(camera_id, full_bbox, display_label, confidence)
+            self._annotate_frame(annotated_frame, full_bbox, display_label, confidence)
+
+        self._draw_fps(annotated_frame, annotated_frame.shape[:2])
         with self.latest_frame_lock:
             self.latest_frame = annotated_frame
 
@@ -88,43 +134,34 @@ class CameraPipeline:
         with self.latest_frame_lock:
             return None if self.latest_frame is None else self.latest_frame.copy()
 
-    def _annotate_frame(self, frame: Any, bbox: list[int], identity: str, confidence: float, source_shape: tuple[int, int]) -> None:
-        frame_height, frame_width = frame.shape[:2]
-        source_h, source_w = source_shape
-        x_scale = frame_width / source_w
-        y_scale = frame_height / source_h
-
+    def _annotate_frame(self, frame: Any, bbox: list[int], identity: str, confidence: float) -> None:
         left, top, right, bottom = bbox
-        left = int(left * x_scale)
-        right = int(right * x_scale)
-        top = int(top * y_scale)
-        bottom = int(bottom * y_scale)
-
         cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
         label = f'{identity} ({confidence:.2f})' if identity != 'Unknown' else 'Unknown'
         cv2.rectangle(frame, (left, bottom - 24), (right, bottom), (0, 255, 0), cv2.FILLED)
         cv2.putText(frame, label, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
-    def _draw_fps(self, frame: Any) -> None:
-        fps_text = f'FPS: {self.fps:.1f}'
-        _frame_height, frame_width = frame.shape[:2]
-        text_size, _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-        text_width, text_height = text_size
-        x = frame_width - text_width - 12
-        y = text_height + 12
-
-        cv2.rectangle(frame, (x - 8, y - text_height - 4), (x + text_width + 8, y + 8), (0, 0, 0), cv2.FILLED)
-        cv2.putText(frame, fps_text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    def _draw_fps(self, frame: Any, frame_shape: tuple[int, int]) -> None:
+        fh, fw = frame_shape
+        det_w, det_h = self.frame_size
+        mode_lines = [
+            f'Det: {det_w}x{det_h} | Cam: {self.capture_width}x{self.capture_height} | Frame: {fw}x{fh}',
+            f'Model: {self.model_name}',
+        ]
+        draw_text_block(frame, mode_lines, corner='top_left')
+        draw_text_block(frame, [f'FPS: {self.fps:.1f}'], corner='top_right', font_scale=0.8, thickness=2)
 
 
 def load_config(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
     with path.open('r', encoding='utf-8') as stream:
-        return yaml.safe_load(stream)
+        return yaml.safe_load(stream) or {}
 
 
-def build_camera_sources(config: Dict[str, Any]) -> List[Tuple[str, Any]]:
+def build_camera_sources(config: Dict[str, Any], webcam_index: Optional[int] = None) -> List[Tuple[str, Any]]:
     sources: List[Tuple[str, Any]] = []
-    sources.append(('webcam', int(config.get('webcam_index', 0))))
+    sources.append(('webcam', int(webcam_index if webcam_index is not None else config.get('webcam_index', 0))))
     rtsp_urls = cast(List[Any], config.get('rtsp_urls', []) or [])
     for idx, url in enumerate(rtsp_urls):
         sources.append((f'rtsp-{idx + 1}', str(url)))
@@ -132,49 +169,66 @@ def build_camera_sources(config: Dict[str, Any]) -> List[Tuple[str, Any]]:
 
 
 def main() -> None:
-    project_root = Path(__file__).resolve().parent.parent
+    options = parse_run_args('Facial recognition (max-quality defaults)', cpu=False)
+
+    project_root = Path(__file__).resolve().parent
     config_path = project_root / 'config.yaml'
     config: Dict[str, Any] = load_config(config_path)
-    threshold = float(config.get('similarity_threshold', 0.60))
+
+    threshold = float(config.get('similarity_threshold', 0.35))
     use_gpu = bool(config.get('use_gpu', False))
-    frame_width = int(config.get('inference_frame_width', 640))
-    frame_height = int(config.get('inference_frame_height', 640))
     reconnect_interval = int(config.get('reconnect_interval_seconds', 10))
+
+    default_det_w = int(config.get('inference_frame_width', MAX_DET_SIZE))
+    default_det_h = int(config.get('inference_frame_height', MAX_DET_SIZE))
+    if not options.det_width and not options.det_height and not options.max_quality:
+        default_det_w, default_det_h = MAX_DET_SIZE, MAX_DET_SIZE
+    det_w, det_h = resolve_det_size(options, default_det_w, default_det_h)
+    model_name = resolve_model(options, MAX_MODEL)
+    cam_w, cam_h = resolve_camera_size(options, MAX_CAMERA_WIDTH, MAX_CAMERA_HEIGHT)
+
     gallery_path = str(project_root / config.get('gallery_path', 'known_faces/gallery.npz'))
     log_path = str(project_root / config.get('log_file', 'detections.csv'))
-    database_url = config.get('database_url', None)
+    database_url = os.environ.get('DATABASE_URL', config.get('database_url', None))
 
-    detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(frame_width, frame_height)))
+    logger.info(
+        'Settings: detection=%dx%d model=%s camera=%dx%d gpu=%s',
+        det_w, det_h, model_name, cam_w, cam_h, use_gpu,
+    )
+
+    detector: Any = cast(
+        Any,
+        InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=model_name),
+    )
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
-    
-    # Create profile lookup function for database logging
+
     def profile_lookup(identity: str) -> Optional[str]:
-        """Look up profile ID by identity name."""
-        if identity == "Unknown":
+        if identity == 'Unknown':
             return None
-        # Convert identity name to profile ID (simple mapping)
-        # In production, query the database or use a real mapping
-        return identity.lower().replace(" ", "-")
-    
+        return identity.lower().replace(' ', '-')
+
     det_logger = DetectionLogger(
         log_path=log_path,
         db_url=database_url,
-        profile_lookup=profile_lookup
+        profile_lookup=profile_lookup,
     )
 
     camera_pipelines: List[Any] = []
-    pending_saver = PendingSaver()
-    for camera_id, source in build_camera_sources(config):
+    pending_saver = PendingSaver(project_root / 'pending')
+    for camera_id, source in build_camera_sources(config, options.webcam_index):
         pipeline: Any = CameraPipeline(
             camera_id=camera_id,
             source=source,
             detector=detector,
             recognizer=recognizer,
             logger=det_logger,
-            frame_size=(frame_width, frame_height),
+            frame_size=(det_w, det_h),
             pending_saver=pending_saver,
+            capture_width=cam_w,
+            capture_height=cam_h,
+            reconnect_interval=reconnect_interval,
+            model_name=model_name,
         )
-        pipeline.capture.reconnect_interval = reconnect_interval
         camera_pipelines.append(pipeline)
 
     for pipeline in camera_pipelines:
@@ -187,6 +241,9 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+
+    for pipeline in camera_pipelines:
+        cv2.namedWindow(pipeline.camera_id, cv2.WINDOW_NORMAL)
 
     try:
         logger.info('Starting main loop, pipelines=%d', len(camera_pipelines))

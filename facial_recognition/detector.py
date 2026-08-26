@@ -8,15 +8,17 @@ import logging
 
 import cv2
 import numpy as np
-from insightface.app import FaceAnalysis  # type: ignore[reportMissingTypeStubs]
+import onnxruntime as ort
 
+from insightface.app import FaceAnalysis  # type: ignore[reportMissingTypeStubs]
+from insightface.app.common import Face
 
 class InsightFaceDetector:
     def __init__(
         self,
         use_gpu: bool,
         det_size: Tuple[int, int],
-        model_name: str = 'buffalo_l',
+        model_name: str = 'buffalo_s',
         fast_detector: bool = False,
         cascade_path: Optional[str] = None,
     ) -> None:
@@ -25,8 +27,40 @@ class InsightFaceDetector:
         self.model_name = model_name
         providers = ['CUDAExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
 
-        self.app: Any = FaceAnalysis(name=model_name, providers=providers, allowed_modules=['detection', 'recognition'])
-        self.app.prepare(ctx_id=0 if use_gpu else -1, det_size=det_size)
+        import multiprocessing
+        import onnxruntime as ort
+        
+        try:
+            import psutil
+            physical_cores = psutil.cpu_count(logical=False)
+            if physical_cores is None:
+                raise ValueError("psutil returned None for physical cores")
+            method = "psutil.cpu_count"
+        except Exception:
+            physical_cores = max(1, multiprocessing.cpu_count() // 2)
+            method = "multiprocessing.cpu_count() // 2 (fallback)"
+
+        threads = min(4, max(1, physical_cores - 1))
+        logging.getLogger(__name__).info(
+            "Initializing ONNX Runtime with %d intra-op threads (Physical cores detected: %d via %s)",
+            threads, physical_cores, method
+        )
+
+        _orig_init = ort.InferenceSession.__init__
+        try:
+            def _optimized_init(self, path_or_bytes, sess_options=None, providers=None, provider_options=None, **kwargs):
+                if sess_options is None:
+                    sess_options = ort.SessionOptions()
+                sess_options.intra_op_num_threads = threads
+                sess_options.inter_op_num_threads = 1
+                _orig_init(self, path_or_bytes, sess_options, providers, provider_options, **kwargs)
+            
+            ort.InferenceSession.__init__ = _optimized_init
+            
+            self.app: Any = FaceAnalysis(name=model_name, providers=providers, allowed_modules=['detection', 'recognition'])
+            self.app.prepare(ctx_id=0 if use_gpu else -1, det_size=det_size)
+        finally:
+            ort.InferenceSession.__init__ = _orig_init
 
         cv2_any: Any = cv2
         self.use_fast_detector = self.use_fast_detector and hasattr(cv2_any, 'CascadeClassifier')
@@ -97,7 +131,6 @@ class InsightFaceDetector:
             haar_dur = (time.perf_counter() - haar_start) * 1000.0
             logger.debug('Haar found %d candidates in %.2f ms', len(faces), haar_dur)
 
-            emb_start = time.perf_counter()
             for x, y, w, h in faces:
                 x0 = int(x / scale_factor)
                 y0 = int(y / scale_factor)
@@ -107,26 +140,39 @@ class InsightFaceDetector:
                 y0 = max(0, y0)
                 x1 = min(frame.shape[1], x1)
                 y1 = min(frame.shape[0], y1)
-                crop = frame[y0:y1, x0:x1]
-                if crop.size == 0:
-                    continue
-                aligned = cv2.resize(crop, (self.rec_input_size, self.rec_input_size))
-                embedding = np.asarray(self.rec_model.get_feat(aligned), dtype=np.float32).flatten()
-                results.append({'bbox': [x0, y0, x1, y1], 'embedding': embedding})
-            emb_dur = (time.perf_counter() - emb_start) * 1000.0
-            logger.debug('Embedding extraction for %d faces took %.2f ms', len(results), emb_dur)
+                results.append({'bbox': [x0, y0, x1, y1]})
             detect_dur = (time.perf_counter() - detect_start) * 1000.0
             logger.debug('Fast detect total %.2f ms', detect_dur)
             return results
 
         scrfd_start = time.perf_counter()
-        faces = self.app.get(frame)
-        for face in faces:
-            bbox = [int(max(0, v)) for v in face.bbox.tolist()]
-            embedding = np.asarray(face.embedding, dtype=np.float32)
-            results.append({'bbox': bbox, 'embedding': embedding})
+        bboxes, kpss = self.app.models['detection'].detect(frame, max_num=0, metric='default')
+        if bboxes.shape[0] > 0:
+            for i in range(bboxes.shape[0]):
+                bbox = [int(max(0, v)) for v in bboxes[i, 0:4].tolist()]
+                det_score = float(bboxes[i, 4])
+                kps = kpss[i] if kpss is not None else None
+                results.append({'bbox': bbox, 'det_score': det_score, 'kps': kps})
         scrfd_dur = (time.perf_counter() - scrfd_start) * 1000.0
         logger.debug('SCRFD detected %d faces in %.2f ms', len(results), scrfd_dur)
         detect_dur = (time.perf_counter() - detect_start) * 1000.0
         logger.debug('Full detect total %.2f ms', detect_dur)
         return results
+
+    def extract_embedding(self, frame: np.ndarray, face_dict: Dict[str, Any]) -> Optional[np.ndarray]:
+        if self.use_fast_detector and self.rec_model is not None:
+            bbox = face_dict['bbox']
+            x0, y0, x1, y1 = [int(v) for v in bbox]
+            crop = frame[max(0, y0):min(frame.shape[0], y1), max(0, x0):min(frame.shape[1], x1)]
+            if crop.size == 0:
+                return None
+            aligned = cv2.resize(crop, (self.rec_input_size, self.rec_input_size))
+            return np.asarray(self.rec_model.get_feat(aligned), dtype=np.float32).flatten()
+
+        if 'recognition' not in self.app.models:
+            return None
+        face = Face(bbox=np.array(face_dict['bbox']), kps=face_dict.get('kps'))
+        self.app.models['recognition'].get(frame, face)
+        if face.embedding is None:
+            return None
+        return np.asarray(face.embedding, dtype=np.float32)
