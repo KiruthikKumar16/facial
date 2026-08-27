@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class EdgeFramePublisher:
-    """Keeps one outbound WebSocket per camera and sends only the latest frame."""
+    """Uploads the latest annotated frame to Render over authenticated HTTPS."""
 
     def __init__(self, camera_id: str, get_frame: Callable[[], Any], *, api_url: str | None = None,
                  api_key: str | None = None, fps: float | None = None, jpeg_quality: int | None = None) -> None:
@@ -43,40 +43,48 @@ class EdgeFramePublisher:
         if self._thread is not None:
             self._thread.join(timeout=3)
 
-    def _websocket_url(self) -> str:
-        base = self.api_url.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
-        return f"{base}/ws/video/push/{quote(self.camera_id, safe='')}?api_key={quote(self.api_key, safe='')}"
+    def _upload_url(self) -> str:
+        return f"{self.api_url}/api/internal/cameras/{quote(self.camera_id, safe='')}/frame"
 
     def _run(self) -> None:
         try:
-            import websocket
+            import requests
         except ImportError:
-            logger.error("Cloud video relay needs websocket-client. Install requirements.txt again.")
+            logger.error("Cloud video relay needs requests. Install requirements.txt again.")
             return
 
         retry_seconds, interval = 1.0, 1.0 / self.fps
+        session = requests.Session()
+        connected = False
         while not self._stop.is_set():
-            ws = None
             try:
-                ws = websocket.create_connection(self._websocket_url(), timeout=10)
-                ws.settimeout(10)
+                frame = self.get_frame()
+                if frame is None:
+                    self._stop.wait(interval)
+                    continue
+
+                ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+                if not ok:
+                    self._stop.wait(interval)
+                    continue
+
+                response = session.post(
+                    self._upload_url(),
+                    data=encoded.tobytes(),
+                    headers={
+                        "Content-Type": "image/jpeg",
+                        "X-API-Key": self.api_key,
+                    },
+                    timeout=10,
+                )
+                response.raise_for_status()
+                if not connected:
+                    logger.info("Cloud video relay is uploading frames for camera '%s'", self.camera_id)
+                    connected = True
                 retry_seconds = 1.0
-                logger.info("Cloud video relay connected for camera '%s'", self.camera_id)
-                while not self._stop.is_set():
-                    started = time.monotonic()
-                    frame = self.get_frame()
-                    if frame is not None:
-                        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
-                        if ok:
-                            ws.send(encoded.tobytes(), opcode=websocket.ABNF.OPCODE_BINARY)
-                    self._stop.wait(max(0.0, interval - (time.monotonic() - started)))
+                self._stop.wait(interval)
             except Exception as exc:
-                logger.warning("Cloud video relay disconnected for '%s': %s", self.camera_id, exc)
+                connected = False
+                logger.warning("Cloud video relay upload failed for '%s': %s", self.camera_id, exc)
                 self._stop.wait(retry_seconds)
                 retry_seconds = min(retry_seconds * 2, 30.0)
-            finally:
-                if ws is not None:
-                    try:
-                        ws.close()
-                    except Exception:
-                        pass

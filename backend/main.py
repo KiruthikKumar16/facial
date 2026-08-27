@@ -819,7 +819,30 @@ async def stream_snapshot(camera_id: str):
     )
 
 
-# ==================== Edge Video Push WebSocket ====================
+# ==================== Edge Video Push ====================
+
+@app.post("/api/internal/cameras/{camera_id}/frame", status_code=204)
+async def push_camera_frame(
+    camera_id: str,
+    request: Request,
+    api_key: str = Depends(verify_edge_node),
+):
+    """Accept the latest annotated JPEG from an edge camera over HTTPS.
+
+    This avoids relying on a long-lived inbound WebSocket connection at the
+    deployment proxy. Only the most recent frame is retained in memory.
+    """
+    jpeg = await request.body()
+    if not jpeg or len(jpeg) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Invalid frame size")
+
+    slot = _get_slot(camera_id)
+    slot.jpeg = jpeg
+    slot.event.set()
+    return Response(status_code=204)
+
+
+# Legacy WebSocket receiver kept for local deployments.
 
 @app.websocket("/ws/video/push/{camera_id}")
 async def video_push(camera_id: str, websocket: WebSocket):
