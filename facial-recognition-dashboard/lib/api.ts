@@ -77,7 +77,19 @@ export function getCameraSnapshotUrl(cameraId: string): string {
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(`API Error: ${response.status} ${response.statusText}`)
+    let message = `API Error: ${response.status} ${response.statusText}`
+    try {
+      const body = await response.json()
+      if (typeof body?.detail === 'string') message = body.detail
+      else if (Array.isArray(body?.detail)) {
+        message = body.detail
+          .map((item: any) => item?.msg ?? JSON.stringify(item))
+          .join(', ')
+      }
+    } catch {
+      // Keep the status-text fallback when the backend did not return JSON.
+    }
+    throw new Error(message)
   }
   return response.json()
 }

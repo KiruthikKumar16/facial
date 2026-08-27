@@ -133,5 +133,9 @@ class _Settings:
     def debug(self) -> bool:
         return _parse_bool(_get("DEBUG", "False"), False)
 
+    @property
+    def enable_forensic_search(self) -> bool:
+        return _parse_bool(_get("ENABLE_FORENSIC_SEARCH", "False"), False)
+
 
 settings = _Settings()

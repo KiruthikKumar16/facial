@@ -34,3 +34,5 @@ services:
         sync: false
       - key: EDGE_API_KEY
         sync: false
+      - key: ENABLE_FORENSIC_SEARCH
+        value: "false"

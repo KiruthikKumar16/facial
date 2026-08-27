@@ -243,7 +243,12 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("Database initialized")
     
-    if InsightFaceDetector is not None and not os.environ.get("RENDER"):
+    should_load_ai = (
+        InsightFaceDetector is not None
+        and (settings.enable_forensic_search or not os.environ.get("RENDER"))
+    )
+
+    if should_load_ai:
         logger.info("Loading AI Models via facial_recognition module...")
         try:
             detector = InsightFaceDetector(use_gpu=False, det_size=(320, 320), fast_detector=False, model_name='buffalo_s')
@@ -270,8 +275,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to load AI models: {e}")
     else:
-        logger.warning("AI logic is disabled (either module missing or running on Render).")
-        logger.warning("facial_recognition module not available. AI logic will be disabled.")
+        logger.warning(
+            "AI logic is disabled (module missing, running on Render without "
+            "ENABLE_FORENSIC_SEARCH=true, or model load skipped)."
+        )
         
     yield
     # Shutdown
@@ -937,11 +944,24 @@ async def run_forensic_search(
 ):
     """Run forensic search using pgvector."""
     if not image:
-        return []
+        raise HTTPException(status_code=400, detail="Upload a probe image to run forensic search.")
+
+    if not ai_models.get("detector"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Forensic image search is not enabled on this backend. "
+                "Run the backend locally, or set ENABLE_FORENSIC_SEARCH=true "
+                "on Render and redeploy."
+            ),
+        )
     
     target_embedding = await extract_face_embedding(image)
     if target_embedding is None:
-        return []
+        raise HTTPException(
+            status_code=422,
+            detail="No face embedding could be extracted from the uploaded image.",
+        )
     
     max_distance = 1.0 - threshold
     camera_filter = [
