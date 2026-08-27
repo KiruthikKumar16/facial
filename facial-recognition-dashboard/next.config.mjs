@@ -1,7 +1,15 @@
-import { loadEnvConfig } from '@next/env'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
+
+function loadRootPublicEnv(envFile) {
+  for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^(NEXT_PUBLIC_(?:API_URL|WS_URL))=(.*)$/)
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].trim().replace(/^['"]|['"]$/g, '')
+    }
+  }
+}
 
 /**
  * Load .env from the MONOREPO ROOT (parent of facial-recognition-dashboard/).
@@ -21,14 +29,9 @@ const rootDir = path.resolve(projectDir, '..')
 const rootEnv = path.join(rootDir, '.env')
 
 if (fs.existsSync(rootEnv)) {
-  // @next/env handles overriding correctly (process.env wins over file for keys that already exist)
+  // Vercel-injected variables always win; this only supports the root .env in local dev.
   process.env.ROOT_ENV_LOADED_FROM = rootEnv
-  loadEnvConfig(rootDir, process.env.NODE_ENV !== 'production', {
-    // minimal log; suppress "Load env" messages that reference the wrong dir
-  })
-} else {
-  // Default Next.js behaviour: load from projectDir (facial-recognition-dashboard/.env*)
-  loadEnvConfig(projectDir, process.env.NODE_ENV !== 'production')
+  loadRootPublicEnv(rootEnv)
 }
 
 /** @type {import('next').NextConfig} */
