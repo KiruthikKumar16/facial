@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, extract, text, case
+from sqlalchemy import func, and_, extract, text, case, select
 
 import io
 import cv2
@@ -925,6 +925,14 @@ async def websocket_kpis(websocket: WebSocket):
 async def run_forensic_search(
     image: UploadFile = File(None),
     threshold: float = Form(0.60),
+    date_from: Optional[datetime] = Form(None),
+    date_to: Optional[datetime] = Form(None),
+    camera_ids: Optional[str] = Form(None),
+    gender: Optional[str] = Form(None),
+    age_min: Optional[int] = Form(None),
+    age_max: Optional[int] = Form(None),
+    wearing_mask: Optional[bool] = Form(None),
+    wearing_glasses: Optional[bool] = Form(None),
     db: Session = Depends(get_db)
 ):
     """Run forensic search using pgvector."""
@@ -936,14 +944,47 @@ async def run_forensic_search(
         return []
     
     max_distance = 1.0 - threshold
+    camera_filter = [
+        camera_id.strip()
+        for camera_id in (camera_ids or "").split(",")
+        if camera_id.strip()
+    ]
+
+    detection_filters = []
+    if date_from is not None:
+        detection_filters.append(Detection.timestamp >= date_from)
+    if date_to is not None:
+        detection_filters.append(Detection.timestamp <= date_to)
+    if camera_filter:
+        detection_filters.append(Detection.camera_id.in_(camera_filter))
+    if gender and gender.lower() != "all":
+        detection_filters.append(Detection.gender == parse_gender(gender))
+    if age_min is not None:
+        detection_filters.append(Detection.age >= age_min)
+    if age_max is not None:
+        detection_filters.append(Detection.age <= age_max)
+    if wearing_mask is True:
+        detection_filters.append(Detection.wearing_mask.is_(True))
+    if wearing_glasses is True:
+        detection_filters.append(Detection.wearing_glasses.is_(True))
+
+    distance_expr = Embedding.vector.cosine_distance(target_embedding.tolist())
+    query = db.query(
+        Profile,
+        distance_expr.label("distance")
+    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
+        distance_expr <= max_distance
+    )
+
+    if detection_filters:
+        matching_profile_ids = select(Detection.profile_id).filter(
+            Detection.profile_id.isnot(None),
+            *detection_filters,
+        ).distinct()
+        query = query.filter(Profile.id.in_(matching_profile_ids))
     
     # pgvector '<=>' operator is cosine distance
-    results = db.query(
-        Profile,
-        Embedding.vector.cosine_distance(target_embedding.tolist()).label("distance")
-    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
-        Embedding.vector.cosine_distance(target_embedding.tolist()) <= max_distance
-    ).order_by("distance").limit(10).all()
+    results = query.order_by("distance").limit(25).all()
     
     matches = []
     seen = set()
@@ -951,15 +992,36 @@ async def run_forensic_search(
         if profile.id in seen:
             continue
         seen.add(profile.id)
+        latest_detection_query = db.query(Detection).filter(
+            Detection.profile_id == profile.id
+        )
+        if detection_filters:
+            latest_detection_query = latest_detection_query.filter(*detection_filters)
+        latest_detection = latest_detection_query.order_by(
+            Detection.timestamp.desc()
+        ).first()
         matches.append(
             ForensicMatchResponse(
                 profile_id=profile.id,
                 profile_name=profile.name,
+                role=profile.role.value if profile.role else None,
                 match_score=1.0 - distance,
                 embeddings_matched=profile.embedding_count,
-                last_seen=profile.last_seen or datetime.utcnow()
+                last_seen=(
+                    latest_detection.timestamp
+                    if latest_detection
+                    else profile.last_seen
+                ),
+                camera_name=(
+                    latest_detection.camera.name
+                    if latest_detection and latest_detection.camera
+                    else None
+                ),
+                avatarTone=snapshot_tone_for(profile.id),
             )
         )
+        if len(matches) >= 10:
+            break
     return matches
 
 @app.get("/api/analytics/duplicates", response_model=list[DuplicateCandidateResponse])

@@ -2,7 +2,12 @@
 
 import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { fetchCameras, fetchTrajectory, runForensicSearch } from '@/lib/api'
+import {
+  fetchCameras,
+  fetchTrajectory,
+  runForensicSearch,
+  type ForensicSearchPayload,
+} from '@/lib/api'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -227,13 +232,17 @@ export function ForensicTab() {
     queryFn: () => fetchCameras(),
   })
   const [file, setFile] = useState<File | null>(null)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [selectedCameras, setSelectedCameras] = useState<string[]>([])
   const [gender, setGender] = useState<Gender | 'all'>('all')
   const [ageRange, setAgeRange] = useState<number[]>([18, 65])
   const [mask, setMask] = useState(false)
   const [glasses, setGlasses] = useState(false)
 
-  const search = useMutation({ mutationFn: runForensicSearch })
+  const search = useMutation<ForensicMatch[], Error, ForensicSearchPayload>({
+    mutationFn: runForensicSearch,
+  })
 
   function toggleCamera(id: string) {
     setSelectedCameras((prev) =>
@@ -263,11 +272,21 @@ export function ForensicTab() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">From</Label>
-                <Input type="datetime-local" defaultValue="2026-08-11T06:00" className="h-8 text-xs" />
+                <Input
+                  type="datetime-local"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-8 text-xs"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">To</Label>
-                <Input type="datetime-local" defaultValue="2026-08-11T19:00" className="h-8 text-xs" />
+                <Input
+                  type="datetime-local"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-8 text-xs"
+                />
               </div>
             </div>
 
@@ -328,8 +347,20 @@ export function ForensicTab() {
             </div>
 
             <Button
-              onClick={() => search.mutate()}
-              disabled={search.isPending}
+              onClick={() => {
+                if (!file) return
+                search.mutate({
+                  imageFile: file,
+                  from: dateFrom,
+                  to: dateTo,
+                  cameraIds: selectedCameras,
+                  gender,
+                  ageRange,
+                  wearingMask: mask,
+                  wearingGlasses: glasses,
+                })
+              }}
+              disabled={!file || search.isPending}
               className="w-full"
             >
               <ScanSearch />
@@ -360,11 +391,27 @@ export function ForensicTab() {
                   />
                 ))}
               </div>
+            ) : search.isError ? (
+              <div className="flex flex-col items-center gap-2 py-12 text-center">
+                <ScanSearch className="size-8 text-destructive" />
+                <p className="text-sm text-muted-foreground">
+                  {search.error.message || 'Forensic search failed.'}
+                </p>
+              </div>
             ) : search.data ? (
               <div className="space-y-2.5">
-                {search.data.map((m, i) => (
-                  <MatchRow key={`${m.profileId ?? 'unk'}-${i}`} match={m} />
-                ))}
+                {search.data.length > 0 ? (
+                  search.data.map((m, i) => (
+                    <MatchRow key={`${m.profileId ?? 'unk'}-${i}`} match={m} />
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center gap-2 py-12 text-center">
+                    <ScanSearch className="size-8 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">
+                      No candidate matches met the current search filters.
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex flex-col items-center gap-2 py-12 text-center">

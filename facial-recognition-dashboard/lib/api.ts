@@ -872,11 +872,40 @@ export const saveThresholds = async (
 
 // ==================== Forensic Search ====================
 
+export type ForensicSearchPayload = {
+  imageFile: File
+  threshold?: number
+  from?: string
+  to?: string
+  cameraIds?: string[]
+  gender?: Gender | 'all'
+  ageRange?: number[]
+  wearingMask?: boolean
+  wearingGlasses?: boolean
+}
+
 export const runForensicSearch = async (
-  imageFile: File,
+  payload: ForensicSearchPayload,
 ): Promise<ForensicMatch[]> => {
   const formData = new FormData()
-  formData.append('image', imageFile)
+  formData.append('image', payload.imageFile)
+  if (payload.threshold !== undefined) {
+    formData.append('threshold', String(payload.threshold))
+  }
+  if (payload.from) formData.append('date_from', payload.from)
+  if (payload.to) formData.append('date_to', payload.to)
+  if (payload.cameraIds && payload.cameraIds.length > 0) {
+    formData.append('camera_ids', payload.cameraIds.join(','))
+  }
+  if (payload.gender && payload.gender !== 'all') {
+    formData.append('gender', payload.gender)
+  }
+  if (payload.ageRange && payload.ageRange.length >= 2) {
+    formData.append('age_min', String(payload.ageRange[0]))
+    formData.append('age_max', String(payload.ageRange[1]))
+  }
+  if (payload.wearingMask) formData.append('wearing_mask', 'true')
+  if (payload.wearingGlasses) formData.append('wearing_glasses', 'true')
   const response = await fetch(apiUrl('/api/forensic/search'), {
     method: 'POST',
     body: formData,

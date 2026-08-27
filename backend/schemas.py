@@ -194,9 +194,12 @@ class ForensicMatchResponse(BaseModel):
     """Result of forensic face search against gallery."""
     profile_id: str
     profile_name: str
+    role: Optional[str] = None
     match_score: float
     embeddings_matched: int
     last_seen: Optional[datetime]
+    camera_name: Optional[str] = None
+    avatarTone: str = "sky"
 
 
 # ==================== Attendance ====================
