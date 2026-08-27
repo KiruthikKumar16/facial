@@ -36,6 +36,8 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Maximize2,
+  Minimize2,
   ScanFace,
   Search,
   UserPlus,
@@ -193,8 +195,10 @@ function CCTVTimestamp() {
 // --- Single camera tile with live MJPEG feed --------------------------------
 
 function CameraStreamTile({ camera }: { camera: { id: string; name: string; ipAddress?: string; zone?: string; status: string } }) {
+  const tileRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
   const [streamError, setStreamError] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const streamUrl = getCameraStreamUrl(camera.id)
 
   // Reset error state so we retry when the component re-mounts or camera changes
@@ -202,8 +206,31 @@ function CameraStreamTile({ camera }: { camera: { id: string; name: string; ipAd
     setStreamError(false)
   }, [camera.id])
 
+  useEffect(() => {
+    function syncFullscreenState() {
+      setIsFullscreen(document.fullscreenElement === tileRef.current)
+    }
+
+    document.addEventListener('fullscreenchange', syncFullscreenState)
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState)
+  }, [])
+
+  async function toggleFullscreen() {
+    if (!tileRef.current) return
+
+    if (document.fullscreenElement === tileRef.current) {
+      await document.exitFullscreen()
+      return
+    }
+
+    await tileRef.current.requestFullscreen()
+  }
+
   return (
-    <div className="group relative overflow-hidden rounded-lg border border-border bg-black aspect-video shadow-inner">
+    <div
+      ref={tileRef}
+      className="group relative aspect-video overflow-hidden rounded-lg border border-border bg-black shadow-inner [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen]:border-0"
+    >
       {/* Live MJPEG stream */}
       {!streamError ? (
         <img
@@ -229,6 +256,21 @@ function CameraStreamTile({ camera }: { camera: { id: string; name: string; ipAd
 
       {/* Scanlines overlay — preserved for CCTV aesthetic */}
       <div className="absolute inset-0 pointer-events-none opacity-10 bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,0.35)_50%)] bg-[length:100%_3px]" />
+
+      <Button
+        type="button"
+        size="icon-sm"
+        variant="ghost"
+        aria-label={isFullscreen ? 'Exit fullscreen camera feed' : 'Open fullscreen camera feed'}
+        title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        className="absolute right-2 top-1/2 z-10 -translate-y-1/2 border border-white/15 bg-black/55 text-white/80 shadow-lg backdrop-blur-sm hover:bg-black/80 hover:text-white focus-visible:border-white/40 focus-visible:ring-white/25"
+        onClick={(event) => {
+          event.stopPropagation()
+          void toggleFullscreen()
+        }}
+      >
+        {isFullscreen ? <Minimize2 /> : <Maximize2 />}
+      </Button>
 
       {/* Top HUD */}
       <div className="absolute top-2 left-2 right-2 flex items-center justify-between font-mono text-[10px] sm:text-[11px] font-semibold text-white/90 drop-shadow-md">
