@@ -12,7 +12,26 @@ import logging
 
 try:
     from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv(usecwd=True))
+
+    def _resolve_env_path() -> Path | None:
+        """Resolve the single root .env file.
+
+        Preference:
+        1. <repo-root>/.env   (one level up from facial_recognition/ package)
+        2. find_dotenv fallback (walks from cwd upward)
+        """
+        here = Path(__file__).resolve().parent
+        root_candidate = here.parent / ".env"
+        if root_candidate.is_file():
+            return root_candidate
+        fallback = find_dotenv(usecwd=True)
+        if fallback:
+            return Path(fallback)
+        return None
+
+    _env = _resolve_env_path()
+    if _env is not None:
+        load_dotenv(_env, override=False)
 except ImportError:
     pass
 
@@ -38,6 +57,7 @@ from cli import (
     resolve_model,
 )
 from overlay import draw_text_block
+from edge_stream import EdgeFramePublisher
 
 
 class CameraPipeline:
@@ -234,6 +254,13 @@ def main() -> None:
     for pipeline in camera_pipelines:
         pipeline.start()
 
+    frame_publishers = [
+        EdgeFramePublisher(pipeline.camera_id, pipeline.get_frame)
+        for pipeline in camera_pipelines
+    ]
+    for publisher in frame_publishers:
+        publisher.start()
+
     stop_event = threading.Event()
 
     def handle_signal(signum: int, frame: Any) -> None:
@@ -255,6 +282,8 @@ def main() -> None:
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
     finally:
+        for publisher in frame_publishers:
+            publisher.stop()
         for pipeline in camera_pipelines:
             pipeline.stop()
         det_logger.close()

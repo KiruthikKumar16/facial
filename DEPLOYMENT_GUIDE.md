@@ -89,6 +89,8 @@ copy .env.example .env
 ```env
 API_URL=https://your-app.onrender.com
 EDGE_API_KEY=same-key-as-render
+EDGE_STREAM_FPS=8
+EDGE_STREAM_JPEG_QUALITY=75
 ```
 
 3. Run detection:

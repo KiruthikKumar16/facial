@@ -30,3 +30,6 @@ out/
 # Local face data and enrollments
 known_faces/
 pending/
+
+# gstack (global install)
+.amazonq/rules/gstack.md

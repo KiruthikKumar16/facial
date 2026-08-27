@@ -4,7 +4,7 @@
 Usage (from repo root):
     python scripts/sync_gallery_to_supabase.py
 
-Requires DATABASE_URL in backend/.env or environment.
+Requires DATABASE_URL in root .env or environment.
 Reads: facial_recognition/known_faces/gallery.npz
 """
 from __future__ import annotations
@@ -22,7 +22,14 @@ BACKEND_DIR = REPO_ROOT / "backend"
 GALLERY_PATH = REPO_ROOT / "facial_recognition" / "known_faces" / "gallery.npz"
 
 sys.path.insert(0, str(BACKEND_DIR))
-load_dotenv(BACKEND_DIR / ".env")
+
+# Prefer the SINGLE ROOT .env (fall back to backend/.env for legacy setups)
+_root_env = REPO_ROOT / ".env"
+_backend_env = BACKEND_DIR / ".env"
+if _root_env.is_file():
+    load_dotenv(_root_env, override=False)
+elif _backend_env.is_file():
+    load_dotenv(_backend_env, override=False)
 
 from database import SessionLocal  # noqa: E402
 from models import (  # noqa: E402

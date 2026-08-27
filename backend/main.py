@@ -71,6 +71,28 @@ ai_models = {}
 # camera_id -> CameraPipeline  (populated in lifespan when not on Render)
 camera_pipelines: dict = {}
 
+# ---------- frame relay store ------------------------------------------------
+# camera_id -> latest raw JPEG bytes pushed by the edge node.
+# Written by the push WebSocket, read by the MJPEG streaming endpoint.
+# asyncio.Event per camera_id notifies waiting MJPEG consumers when a new
+# frame arrives so they don't busy-poll.
+
+import dataclasses
+
+@dataclasses.dataclass
+class _FrameSlot:
+    jpeg: bytes = b""
+    event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+
+# Populated lazily; access only from the event-loop thread.
+_frame_store: dict[str, _FrameSlot] = {}
+
+def _get_slot(camera_id: str) -> "_FrameSlot":
+    if camera_id not in _frame_store:
+        _frame_store[camera_id] = _FrameSlot()
+    return _frame_store[camera_id]
+# -----------------------------------------------------------------------------
+
 
 def _load_recognition_config() -> dict:
     """Load facial_recognition/config.yaml relative to the repo root."""
@@ -686,32 +708,52 @@ def acknowledge_alert(
 async def _mjpeg_frame_generator(camera_id: str):
     """
     Async generator that yields MJPEG boundary chunks for a given camera.
-    Falls back to a 1-frame-per-second black placeholder when the pipeline
-    is not running (e.g. on Render or before models finish loading).
+
+    Priority:
+      1. Frame store — JPEG bytes pushed by the remote edge node via
+         /ws/video/push/{camera_id}.  This is the path used on Render.
+      2. Local CameraPipeline — when the backend is running locally with
+         the pipeline in-process (non-Render dev mode).
+      3. Black placeholder — keeps the <img> alive when nothing is streaming.
     """
     BOUNDARY = b"--frame"
-    SLEEP_BETWEEN_FRAMES = 1.0 / 25  # target ~25 fps cap for the stream
+    BLANK = cv2.imencode(
+        ".jpg",
+        np.zeros((240, 320, 3), dtype=np.uint8),
+        [cv2.IMWRITE_JPEG_QUALITY, 50],
+    )[1].tobytes()
 
     while True:
+        # --- 1. Remote push via frame store (Render / cloud) ---
+        slot = _get_slot(camera_id)
+        if slot.jpeg:
+            jpeg_bytes = slot.jpeg
+            slot.event.clear()
+            yield (
+                BOUNDARY
+                + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                + str(len(jpeg_bytes)).encode()
+                + b"\r\n\r\n"
+                + jpeg_bytes
+                + b"\r\n"
+            )
+            # Wait up to 200 ms for the next pushed frame before looping
+            try:
+                await asyncio.wait_for(slot.event.wait(), timeout=0.2)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        # --- 2. Local in-process pipeline (dev / local mode) ---
         pipeline = camera_pipelines.get(camera_id)
         frame = pipeline.get_frame() if pipeline is not None else None
-
-        if frame is None:
-            # Produce a small black placeholder so the <img> stays alive
-            frame = cv2.imencode(
-                ".jpg",
-                np.zeros((240, 320, 3), dtype=np.uint8),
-                [cv2.IMWRITE_JPEG_QUALITY, 50],
-            )[1].tobytes()
-            jpeg_bytes = frame
+        if frame is not None:
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            jpeg_bytes = buf.tobytes() if ok else BLANK
         else:
-            ok, buf = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
-            )
-            if not ok:
-                await asyncio.sleep(SLEEP_BETWEEN_FRAMES)
-                continue
-            jpeg_bytes = buf.tobytes()
+            # --- 3. Placeholder ---
+            jpeg_bytes = BLANK
+            await asyncio.sleep(0.5)  # slow down when idle
 
         yield (
             BOUNDARY
@@ -721,7 +763,8 @@ async def _mjpeg_frame_generator(camera_id: str):
             + jpeg_bytes
             + b"\r\n"
         )
-        await asyncio.sleep(SLEEP_BETWEEN_FRAMES)
+        if frame is not None:
+            await asyncio.sleep(1.0 / 25)  # ~25 fps cap
 
 
 @app.get(
@@ -752,6 +795,14 @@ async def stream_camera(camera_id: str):
 @app.get("/api/cameras/{camera_id}/stream/snapshot")
 async def stream_snapshot(camera_id: str):
     """Return a single JPEG snapshot of the latest annotated frame."""
+    # Prefer frame store (cloud/Render), fall back to local pipeline
+    slot = _get_slot(camera_id)
+    if slot.jpeg:
+        return StreamingResponse(
+            iter([slot.jpeg]),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-cache"},
+        )
     pipeline = camera_pipelines.get(camera_id)
     frame = pipeline.get_frame() if pipeline is not None else None
     if frame is None:
@@ -766,6 +817,45 @@ async def stream_snapshot(camera_id: str):
         media_type="image/jpeg",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+# ==================== Edge Video Push WebSocket ====================
+
+@app.websocket("/ws/video/push/{camera_id}")
+async def video_push(camera_id: str, websocket: WebSocket):
+    """
+    WebSocket endpoint for the local edge node to push annotated JPEG frames
+    to the cloud backend.
+
+    Protocol (binary messages):
+      - Edge sends raw JPEG bytes each frame.
+      - Server stores the latest bytes in the frame store so MJPEG consumers
+        can serve them immediately.
+
+    Authentication:
+      - The edge node must include the API key as a query parameter:
+        wss://your-backend/ws/video/push/webcam?api_key=<EDGE_API_KEY>
+    """
+    expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
+    api_key = websocket.query_params.get("api_key", "")
+    if api_key != expected_key:
+        await websocket.close(code=4003, reason="Invalid API key")
+        return
+
+    await websocket.accept()
+    slot = _get_slot(camera_id)
+    logger.info("Edge node connected for camera '%s'", camera_id)
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            if not data:
+                continue
+            slot.jpeg = data
+            slot.event.set()   # wake any waiting MJPEG consumers
+    except WebSocketDisconnect:
+        logger.info("Edge node disconnected for camera '%s'", camera_id)
+    except Exception as exc:
+        logger.warning("video_push error for '%s': %s", camera_id, exc)
 
 
 # ==================== WebSocket Endpoints ====================

@@ -1,3 +1,20 @@
+# Render backend deployment manifest.
+#
+# ENVIRONMENT VARIABLES in Render Dashboard (must match root .env.example):
+#
+#   PYTHON_VERSION   (required)  "3.11.10" or similar 3.11.x — pgvector 0.3 requires <3.12
+#   DATABASE_URL     (required)  Supabase pooler URI: postgresql://postgres:...@...pooler.supabase.com:5432/postgres
+#   DEBUG                       "false" on production
+#   CORS_ORIGINS                "https://your-app.vercel.app,http://localhost:3000" (comma-sep, NO trailing slashes)
+#   EDGE_API_KEY      (required) Long random secret — MUST ALSO BE SET in root .env for your local edge PC
+#   NEXT_PUBLIC_API_URL  (not set here — for Vercel only)
+#   NEXT_PUBLIC_WS_URL   (not set here — for Vercel only)
+#
+# Note: Render free tier injects RENDER env var automatically. The backend uses
+# it in lifespan() to skip loading heavy InsightFace models (no GPU + cold start
+# penalty). Analytics / detections / alerts all still work fine. Forensic image
+# search requires running a LOCAL backend with GPU.
+
 services:
   - type: web
     name: facial-api

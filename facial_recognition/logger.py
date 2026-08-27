@@ -85,7 +85,7 @@ class DetectionLogger:
                 continue
                 
             for item in items:
-                camera_id, identity, confidence, bbox, now = item
+                camera_id, identity, confidence, bbox, now, age, gender = item
                 
                 payload = {
                     "camera_id": camera_id,
@@ -94,6 +94,10 @@ class DetectionLogger:
                     "bbox": [int(x) for x in bbox],
                     "timestamp": now.isoformat()
                 }
+                if age is not None:
+                    payload["age"] = int(age)
+                if gender is not None:
+                    payload["gender"] = str(gender)
                 
                 try:
                     req = urllib.request.Request(
@@ -142,7 +146,15 @@ class DetectionLogger:
         for k in keys_to_delete:
             del self._dedup[k]
 
-    def log_detection(self, camera_id: str, bbox: list[int], identity: str, confidence: float) -> None:
+    def log_detection(
+        self,
+        camera_id: str,
+        bbox: list[int],
+        identity: str,
+        confidence: float,
+        age: Optional[int] = None,
+        gender: Optional[str] = None,
+    ) -> None:
         now = datetime.now(timezone.utc)
         now_ts = now.timestamp()
         date_str = now.strftime('%Y-%m-%d')
@@ -184,7 +196,7 @@ class DetectionLogger:
                 logger.warning(f"Failed to write CSV: {e}")
 
             # Send to background worker for Database I/O
-            self.log_queue.put((camera_id, identity, confidence, bbox, now))
+            self.log_queue.put((camera_id, identity, confidence, bbox, now, age, gender))
 
         print(f"[{row['timestamp']}] {camera_id} {row['bbox']} -> {identity} ({confidence:.4f})")
 

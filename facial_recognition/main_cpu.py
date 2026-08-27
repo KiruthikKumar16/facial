@@ -17,7 +17,20 @@ import logging
 
 try:
     from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv(usecwd=True))
+
+    def _resolve_env_path() -> Path | None:
+        here = Path(__file__).resolve().parent
+        root_candidate = here.parent / ".env"
+        if root_candidate.is_file():
+            return root_candidate
+        fallback = find_dotenv(usecwd=True)
+        if fallback:
+            return Path(fallback)
+        return None
+
+    _env = _resolve_env_path()
+    if _env is not None:
+        load_dotenv(_env, override=False)
 except ImportError:
     pass
 
@@ -43,6 +56,7 @@ from recognizer import Recognizer
 from pending import PendingSaver
 from cli import parse_run_args, resolve_camera_size, resolve_det_size, resolve_model
 from overlay import draw_text_block
+from edge_stream import EdgeFramePublisher
 from collections import deque
 
 
@@ -510,6 +524,13 @@ def main():
     for p in pipelines:
         cv2.namedWindow(p.camera_id, cv2.WINDOW_NORMAL)
 
+    frame_publishers = [
+        EdgeFramePublisher(pipeline.camera_id, lambda pipeline=pipeline: pipeline.latest_frame)
+        for pipeline in pipelines
+    ]
+    for publisher in frame_publishers:
+        publisher.start()
+
     try:
         while not stop_event.is_set():
             for p in pipelines:
@@ -521,6 +542,8 @@ def main():
             # small sleep to let OS schedule
             time.sleep(0.001)
     finally:
+        for publisher in frame_publishers:
+            publisher.stop()
         for p in pipelines:
             p.stop()
         det_logger.close()
