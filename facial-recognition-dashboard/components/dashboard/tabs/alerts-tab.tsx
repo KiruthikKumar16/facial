@@ -1,11 +1,13 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  acknowledgeAlert,
   fetchAlerts,
   fetchFaceLogs,
   fetchCameras,
+  getCameraStreamUrl,
 } from '@/lib/api'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -115,15 +117,40 @@ function AlertCard({
 }
 
 function AlertSidebar() {
+  const queryClient = useQueryClient()
   const { data: alerts = [] } = useQuery({
     queryKey: ['alerts'],
     queryFn: () => fetchAlerts(),
   })
-  const [acked, setAcked] = useState<string[]>([])
+  const [ackedLocal, setAckedLocal] = useState<string[]>([])
+
+  const ackMutation = useMutation({
+    mutationFn: ({ id, ack }: { id: string; ack: boolean }) => acknowledgeAlert(id, ack),
+    onMutate: async ({ id, ack }) => {
+      await queryClient.cancelQueries({ queryKey: ['alerts'] })
+      const prev = queryClient.getQueryData<Alert[]>(['alerts']) ?? []
+      queryClient.setQueryData<Alert[]>(
+        ['alerts'],
+        prev.map((a) => (a.id === id ? { ...a, acknowledged: ack } : a)),
+      )
+      return { prev }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(['alerts'], ctx.prev)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['alerts'] })
+    },
+  })
+
+  const handleAck = (id: string) => {
+    setAckedLocal((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    ackMutation.mutate({ id, ack: true })
+  }
 
   const merged = alerts.map((a) => ({
     ...a,
-    acknowledged: a.acknowledged || acked.includes(a.id),
+    acknowledged: a.acknowledged || ackedLocal.includes(a.id),
   }))
   const activeCount = merged.filter((a) => !a.acknowledged).length
 
@@ -142,7 +169,7 @@ function AlertSidebar() {
           <AlertCard
             key={alert.id}
             alert={alert}
-            onAck={(id) => setAcked((prev) => [...prev, id])}
+            onAck={handleAck}
           />
         ))}
       </CardContent>
@@ -154,11 +181,91 @@ function AlertSidebar() {
 
 function CCTVTimestamp() {
   const [time, setTime] = useState(() => new Date())
-  
-  // Use useEffect to update the time every second (optional, safe for client components)
-  // To avoid hydration mismatch, we render the time only after mount if needed, 
-  // or just use suppressHydrationWarning.
+
+  useEffect(() => {
+    const id = setInterval(() => setTime(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
   return <span suppressHydrationWarning>{time.toISOString().split('T')[1].substring(0, 8)} Z</span>
+}
+
+// --- Single camera tile with live MJPEG feed --------------------------------
+
+function CameraStreamTile({ camera }: { camera: { id: string; name: string; ipAddress?: string; zone?: string; status: string } }) {
+  const imgRef = useRef<HTMLImageElement>(null)
+  const [streamError, setStreamError] = useState(false)
+  const streamUrl = getCameraStreamUrl(camera.id)
+
+  // Reset error state so we retry when the component re-mounts or camera changes
+  useEffect(() => {
+    setStreamError(false)
+  }, [camera.id])
+
+  return (
+    <div className="group relative overflow-hidden rounded-lg border border-border bg-black aspect-video shadow-inner">
+      {/* Live MJPEG stream */}
+      {!streamError ? (
+        <img
+          ref={imgRef}
+          src={streamUrl}
+          alt={`Live feed – ${camera.name}`}
+          className="absolute inset-0 h-full w-full object-contain"
+          onError={() => setStreamError(true)}
+        />
+      ) : (
+        /* Fallback when stream is unreachable */
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted/10">
+          <Video className="size-8 text-muted-foreground/40" />
+          <p className="font-mono text-[11px] text-muted-foreground/60">Stream unavailable</p>
+          <button
+            className="rounded border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-muted/30 transition-colors"
+            onClick={() => setStreamError(false)}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Scanlines overlay — preserved for CCTV aesthetic */}
+      <div className="absolute inset-0 pointer-events-none opacity-10 bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,0.35)_50%)] bg-[length:100%_3px]" />
+
+      {/* Top HUD */}
+      <div className="absolute top-2 left-2 right-2 flex items-center justify-between font-mono text-[10px] sm:text-[11px] font-semibold text-white/90 drop-shadow-md">
+        <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
+            <div className="size-1.5 rounded-full bg-red-500 animate-pulse" />
+            LIVE
+          </div>
+          <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10 truncate max-w-[120px]">
+            {camera.name}
+          </div>
+        </div>
+        <div
+          className={cn(
+            'rounded-sm px-2 py-0.5 border border-white/10 uppercase text-[9px] tracking-wide',
+            camera.status === 'online'
+              ? 'bg-emerald-900/60 text-emerald-300'
+              : camera.status === 'degraded'
+                ? 'bg-amber-900/60 text-amber-300'
+                : 'bg-black/60 text-white/40',
+          )}
+        >
+          {camera.status}
+        </div>
+      </div>
+
+      {/* Bottom HUD */}
+      <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between font-mono text-[10px] text-white/70 drop-shadow-md">
+        <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10 truncate max-w-[60%]">
+          {camera.ipAddress ? `IP: ${camera.ipAddress}` : camera.id} | {camera.zone || 'General'}
+        </div>
+        <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
+          <CCTVTimestamp />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function LiveCameraFeeds() {
@@ -166,8 +273,10 @@ function LiveCameraFeeds() {
     queryKey: ['cameras'],
     queryFn: () => fetchCameras(),
   })
-  
-  const onlineCameras = cameras.filter(c => c.status === 'online' || c.status === 'degraded')
+
+  const onlineCameras = cameras.filter(
+    (c) => c.status === 'online' || c.status === 'degraded',
+  )
 
   return (
     <Card className="gap-0 py-0">
@@ -176,7 +285,7 @@ function LiveCameraFeeds() {
           icon={Video}
           title="Live Camera Feeds"
           count={onlineCameras.length}
-          description="Real-time CCTV monitoring streams"
+          description="Real-time annotated video from the recognition pipeline"
         />
       </CardHeader>
       <CardContent className="p-3">
@@ -187,36 +296,7 @@ function LiveCameraFeeds() {
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-2">
             {onlineCameras.map((c) => (
-              <div
-                key={c.id}
-                className="group relative overflow-hidden rounded-lg border border-border bg-card/50 aspect-video shadow-inner"
-              >
-                {/* Simulated CCTV feed image */}
-                <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&q=80')] bg-cover bg-center opacity-40 grayscale group-hover:grayscale-0 transition-all duration-700" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40 mix-blend-multiply" />
-                {/* Scanlines overlay */}
-                <div className="absolute inset-0 pointer-events-none opacity-20 bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%]" />
-                
-                {/* CCTV Overlays */}
-                <div className="absolute top-3 left-3 flex items-center gap-2 font-mono text-[10px] sm:text-xs font-semibold text-white/90 drop-shadow-md">
-                  <div className="flex items-center gap-1.5 rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
-                    <div className="size-2 rounded-full bg-red-500 animate-pulse" />
-                    REC
-                  </div>
-                  <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
-                    {c.name}
-                  </div>
-                </div>
-                
-                <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between font-mono text-[10px] sm:text-xs text-white/80 drop-shadow-md">
-                  <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10 truncate max-w-[60%]">
-                    IP: {c.ipAddress || '192.168.1.x'} | {c.zone || 'General'}
-                  </div>
-                  <div className="rounded-sm bg-black/60 px-2 py-0.5 border border-white/10">
-                    <CCTVTimestamp />
-                  </div>
-                </div>
-              </div>
+              <CameraStreamTile key={c.id} camera={c} />
             ))}
           </div>
         )}

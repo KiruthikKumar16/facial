@@ -60,6 +60,21 @@ function wsUrl(channel: string): string {
   return `${WS_URL}/ws/${channel}`
 }
 
+/**
+ * Returns the URL for the MJPEG live stream of a camera's annotated feed.
+ * Drop this directly into an <img src=...> element.
+ */
+export function getCameraStreamUrl(cameraId: string): string {
+  return apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/stream`)
+}
+
+/**
+ * Returns the URL for a single JPEG snapshot of the latest annotated frame.
+ */
+export function getCameraSnapshotUrl(cameraId: string): string {
+  return apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/stream/snapshot`)
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(`API Error: ${response.status} ${response.statusText}`)

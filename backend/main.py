@@ -19,13 +19,27 @@ import numpy as np
 
 import sys
 import os
+import asyncio
+import threading
+import yaml
+from pathlib import Path
+
 # Add parent directory to sys.path to access facial_recognition module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from facial_recognition.detector import InsightFaceDetector
+    from facial_recognition.recognizer import Recognizer
+    from facial_recognition.logger import DetectionLogger
+    from facial_recognition.pending import PendingSaver
 except ImportError as e:
     InsightFaceDetector = None
-    logging.getLogger(__name__).warning(f"Could not import InsightFaceDetector: {e}")
+    Recognizer = None
+    DetectionLogger = None
+    PendingSaver = None
+    logging.getLogger(__name__).warning(f"Could not import facial_recognition modules: {e}")
+
+# ---------- streaming imports ----------
+from starlette.responses import StreamingResponse
 
 from config import settings
 from database import Base, engine, get_db
@@ -52,8 +66,63 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Global state for AI models
+# Global state for AI models and camera pipelines
 ai_models = {}
+# camera_id -> CameraPipeline  (populated in lifespan when not on Render)
+camera_pipelines: dict = {}
+
+
+def _load_recognition_config() -> dict:
+    """Load facial_recognition/config.yaml relative to the repo root."""
+    root = Path(__file__).resolve().parent.parent
+    cfg_path = root / "facial_recognition" / "config.yaml"
+    if not cfg_path.exists():
+        return {}
+    with cfg_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _start_camera_pipelines(detector, recognizer, det_logger) -> dict:
+    """Instantiate and start one CameraPipeline per configured camera source."""
+    try:
+        from facial_recognition.main import CameraPipeline, build_camera_sources
+        from facial_recognition.pending import PendingSaver as _PS
+    except ImportError as exc:
+        logger.warning("Cannot start camera pipelines: %s", exc)
+        return {}
+
+    cfg = _load_recognition_config()
+    cam_w = int(cfg.get("camera_width", 640))
+    cam_h = int(cfg.get("camera_height", 480))
+    det_w = int(cfg.get("inference_frame_width", 320))
+    det_h = int(cfg.get("inference_frame_height", 320))
+    reconnect = int(cfg.get("reconnect_interval_seconds", 10))
+
+    root = Path(__file__).resolve().parent.parent / "facial_recognition"
+    pending_saver = _PS(root / "pending")
+
+    pipelines = {}
+    for camera_id, source in build_camera_sources(cfg):
+        try:
+            pipeline = CameraPipeline(
+                camera_id=camera_id,
+                source=source,
+                detector=detector,
+                recognizer=recognizer,
+                logger=det_logger,
+                frame_size=(det_w, det_h),
+                pending_saver=pending_saver,
+                capture_width=cam_w,
+                capture_height=cam_h,
+                reconnect_interval=reconnect,
+                model_name="buffalo_s",
+            )
+            pipeline.start()
+            pipelines[camera_id] = pipeline
+            logger.info("Started CameraPipeline: %s (source=%s)", camera_id, source)
+        except Exception as exc:
+            logger.error("Failed to start pipeline %s: %s", camera_id, exc)
+    return pipelines
 
 AVATAR_TONES = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
 
@@ -158,6 +227,24 @@ async def lifespan(app: FastAPI):
             detector = InsightFaceDetector(use_gpu=False, det_size=(320, 320), fast_detector=False, model_name='buffalo_s')
             ai_models['detector'] = detector
             logger.info("AI Models Loaded")
+
+            # ---- Start camera pipelines for live streaming ----
+            if Recognizer is not None and DetectionLogger is not None:
+                try:
+                    cfg = _load_recognition_config()
+                    root = Path(__file__).resolve().parent.parent / "facial_recognition"
+                    gallery_path = str(root / cfg.get("gallery_path", "known_faces/gallery.npz"))
+                    log_path = str(root / cfg.get("log_file", "detections.csv"))
+                    database_url = os.environ.get("DATABASE_URL", cfg.get("database_url"))
+                    recognizer = Recognizer(gallery_path=gallery_path, threshold=float(cfg.get("similarity_threshold", 0.35)))
+                    det_logger = DetectionLogger(log_path=log_path, db_url=database_url)
+                    ai_models["recognizer"] = recognizer
+                    ai_models["det_logger"] = det_logger
+                    started = _start_camera_pipelines(detector, recognizer, det_logger)
+                    camera_pipelines.update(started)
+                    logger.info("Camera pipelines started: %s", list(camera_pipelines.keys()))
+                except Exception as exc:
+                    logger.warning("Camera pipelines could not start: %s", exc)
         except Exception as e:
             logger.warning(f"Failed to load AI models: {e}")
     else:
@@ -167,6 +254,18 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     logger.info("Shutting down")
+    for pipeline in camera_pipelines.values():
+        try:
+            pipeline.stop()
+        except Exception:
+            pass
+    camera_pipelines.clear()
+    det_logger_obj = ai_models.get("det_logger")
+    if det_logger_obj:
+        try:
+            det_logger_obj.close()
+        except Exception:
+            pass
     ai_models.clear()
 
 async def extract_face_embedding(file: UploadFile) -> Optional[np.ndarray]:
@@ -579,6 +678,93 @@ def acknowledge_alert(
         confidence=alert.detection.confidence if alert.detection else 0.0,
         acknowledged=alert.acknowledged,
         snapshot_tone="sky",
+    )
+
+
+# ==================== Video Streaming Endpoints ====================
+
+async def _mjpeg_frame_generator(camera_id: str):
+    """
+    Async generator that yields MJPEG boundary chunks for a given camera.
+    Falls back to a 1-frame-per-second black placeholder when the pipeline
+    is not running (e.g. on Render or before models finish loading).
+    """
+    BOUNDARY = b"--frame"
+    SLEEP_BETWEEN_FRAMES = 1.0 / 25  # target ~25 fps cap for the stream
+
+    while True:
+        pipeline = camera_pipelines.get(camera_id)
+        frame = pipeline.get_frame() if pipeline is not None else None
+
+        if frame is None:
+            # Produce a small black placeholder so the <img> stays alive
+            frame = cv2.imencode(
+                ".jpg",
+                np.zeros((240, 320, 3), dtype=np.uint8),
+                [cv2.IMWRITE_JPEG_QUALITY, 50],
+            )[1].tobytes()
+            jpeg_bytes = frame
+        else:
+            ok, buf = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
+            )
+            if not ok:
+                await asyncio.sleep(SLEEP_BETWEEN_FRAMES)
+                continue
+            jpeg_bytes = buf.tobytes()
+
+        yield (
+            BOUNDARY
+            + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+            + str(len(jpeg_bytes)).encode()
+            + b"\r\n\r\n"
+            + jpeg_bytes
+            + b"\r\n"
+        )
+        await asyncio.sleep(SLEEP_BETWEEN_FRAMES)
+
+
+@app.get(
+    "/api/cameras/{camera_id}/stream",
+    summary="MJPEG live stream for an annotated camera feed",
+    responses={200: {"content": {"multipart/x-mixed-replace; boundary=frame": {}}}},
+)
+async def stream_camera(camera_id: str):
+    """
+    Returns a continuous MJPEG stream for the requested camera.
+
+    Works for any camera_id registered in the running pipeline (e.g. 'webcam',
+    'rtsp-1').  When the backend is running on Render or the pipeline has not
+    started, a black placeholder frame is streamed instead.
+    """
+    return StreamingResponse(
+        _mjpeg_frame_generator(camera_id),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            # Prevent browsers / proxies from buffering the stream
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/cameras/{camera_id}/stream/snapshot")
+async def stream_snapshot(camera_id: str):
+    """Return a single JPEG snapshot of the latest annotated frame."""
+    pipeline = camera_pipelines.get(camera_id)
+    frame = pipeline.get_frame() if pipeline is not None else None
+    if frame is None:
+        blank = np.zeros((240, 320, 3), dtype=np.uint8)
+        ok, buf = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    else:
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Frame encoding failed")
+    return StreamingResponse(
+        iter([buf.tobytes()]),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache"},
     )
 
 
