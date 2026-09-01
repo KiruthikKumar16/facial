@@ -127,7 +127,7 @@ class _Settings:
 
     @property
     def port(self) -> int:
-        return _parse_int(_get("PORT", "8000"), 8000)
+        return _parse_int(_get("PORT", "1223"), 1223)
 
     @property
     def debug(self) -> bool:
@@ -136,6 +136,10 @@ class _Settings:
     @property
     def enable_forensic_search(self) -> bool:
         return _parse_bool(_get("ENABLE_FORENSIC_SEARCH", "False"), False)
+
+    @property
+    def enable_edge_pipelines(self) -> bool:
+        return _parse_bool(_get("ENABLE_EDGE_PIPELINES", "False"), False)
 
 
 settings = _Settings()

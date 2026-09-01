@@ -54,8 +54,8 @@ Write-Host "In separate terminals, run:" -ForegroundColor White
 Write-Host ""
 Write-Host "  📡 BACKEND (API + WebSocket):" -ForegroundColor Green
 Write-Host "     cd backend && python main.py" -ForegroundColor Gray
-Write-Host "     → http://localhost:8000" -ForegroundColor Gray
-Write-Host "     → ws://localhost:8000/ws/alerts (WebSocket)" -ForegroundColor Gray
+Write-Host "     → http://localhost:1223" -ForegroundColor Gray
+Write-Host "     → ws://localhost:1223/ws/alerts (WebSocket)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  🎨 FRONTEND (React Dashboard):" -ForegroundColor Blue
 Write-Host "     cd facial-recognition-dashboard && pnpm dev" -ForegroundColor Gray

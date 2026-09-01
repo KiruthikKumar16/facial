@@ -1,6 +1,16 @@
 # Camera and recognition settings
 webcam_index: 0
 rtsp_urls:
+  # Android IP Webcam — H.264 video-only RTSP stream.
+  - rtsp://192.168.1.67:8080/h264.sdp
+  - rtsp://192.168.1.53:8080/h264.sdp
+
+# Valid next-camera hops for movement tracking. Omitted origins allow any hop.
+camera_routes:
+  webcam: [rtsp-1]
+  rtsp-1: [rtsp-2]
+  rtsp-2: []
+max_camera_travel_seconds: 300
 
 # Cosine similarity threshold for identity matching
 similarity_threshold: 0.35

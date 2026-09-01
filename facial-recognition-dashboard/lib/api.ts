@@ -2,12 +2,12 @@
  * Real API client for facial recognition backend.
  *
  * Supports both local development and cloud deployment:
- * - Local: http://localhost:8000
+ * - Local: http://localhost:1223
  * - Render: https://facial-api.render.com
  *
  * Configure via environment variables:
- * NEXT_PUBLIC_API_URL - Base API URL (default: http://localhost:8000)
- * NEXT_PUBLIC_WS_URL - WebSocket URL (default: ws://localhost:8000)
+ * NEXT_PUBLIC_API_URL - Base API URL (default: http://localhost:1223)
+ * NEXT_PUBLIC_WS_URL - WebSocket URL (default: ws://localhost:1223)
  */
 
 import type {
@@ -21,6 +21,8 @@ import type {
   ForensicMatch,
   Gender,
   ModelThresholds,
+  MovementEdge,
+  MovementNetwork,
   Profile,
   ProfileRole,
   SubjectTrajectory,
@@ -30,8 +32,9 @@ import type {
   UnknownCapture,
 } from './types'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:1223'
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:1223'
+const EDGE_API_URL = process.env.NEXT_PUBLIC_EDGE_API_URL || ''
 
 const VALID_ROLES: ProfileRole[] = [
   'employee',
@@ -54,6 +57,11 @@ const AVATAR_TONES = [
 
 function apiUrl(path: string): string {
   return `${API_URL}${path}`
+}
+
+function forensicApiUrl(path: string): string {
+  const baseUrl = EDGE_API_URL.trim() || API_URL
+  return `${baseUrl.replace(/\/$/, '')}${path}`
 }
 
 function wsUrl(channel: string): string {
@@ -759,6 +767,23 @@ export const fetchTrajectory = async (
   }
 }
 
+export const fetchMovementNetwork = async (hours = 24): Promise<MovementNetwork> => {
+  const response = await fetch(apiUrl(`/api/analytics/movement-network?hours=${hours}`))
+  const raw = await handleResponse<any>(response)
+  const edges = Array.isArray(raw?.edges) ? raw.edges : []
+  return {
+    edges: edges.map((edge: any): MovementEdge => ({
+      fromCameraId: strOrEmpty(edge.fromCameraId ?? edge.from_camera_id),
+      fromCameraName: strOrEmpty(edge.fromCameraName ?? edge.from_camera_name),
+      toCameraId: strOrEmpty(edge.toCameraId ?? edge.to_camera_id),
+      toCameraName: strOrEmpty(edge.toCameraName ?? edge.to_camera_name),
+      count: numOrZero(edge.count),
+      lastSeen: strOrEmpty(edge.lastSeen ?? edge.last_seen),
+      averageTravelSeconds: numOrZero(edge.averageTravelSeconds ?? edge.average_travel_seconds),
+    })),
+  }
+}
+
 export const fetchFootfall = async (days?: number): Promise<FootfallBucket[]> => {
   const qs =
     days !== undefined
@@ -918,7 +943,7 @@ export const runForensicSearch = async (
   }
   if (payload.wearingMask) formData.append('wearing_mask', 'true')
   if (payload.wearingGlasses) formData.append('wearing_glasses', 'true')
-  const response = await fetch(apiUrl('/api/forensic/search'), {
+  const response = await fetch(forensicApiUrl('/api/forensic/search'), {
     method: 'POST',
     body: formData,
   })
@@ -951,7 +976,7 @@ export const connectAlertsWebSocket = (
     const message = JSON.parse(event.data)
     onMessage(message.data)
   }
-  ws.onerror = (error) => console.error('WebSocket error:', error)
+  ws.onerror = () => console.warn(`WebSocket unavailable: ${wsUrl('alerts')}`)
   return ws
 }
 
@@ -963,7 +988,7 @@ export const connectCamerasWebSocket = (
     const message = JSON.parse(event.data)
     onMessage(message.data)
   }
-  ws.onerror = (error) => console.error('WebSocket error:', error)
+  ws.onerror = () => console.warn(`WebSocket unavailable: ${wsUrl('cameras')}`)
   return ws
 }
 
@@ -975,7 +1000,7 @@ export const connectKpisWebSocket = (
     const message = JSON.parse(event.data)
     onMessage(message.data)
   }
-  ws.onerror = (error) => console.error('WebSocket error:', error)
+  ws.onerror = () => console.warn(`WebSocket unavailable: ${wsUrl('kpis')}`)
   return ws
 }
 

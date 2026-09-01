@@ -44,7 +44,7 @@ from starlette.responses import StreamingResponse
 from config import settings
 from database import Base, engine, get_db
 from models import (
-    Camera, Profile, Detection, Alert, ModelThreshold, Embedding,
+    Camera, Profile, Detection, Alert, ModelThreshold, Embedding, CameraTransition,
     DetectionStatus as DetectionStatusEnum, CameraStatus as CameraStatusEnum,
     ProfileRole as ProfileRoleEnum, Gender as GenderEnum, EmbeddingStatus as EmbeddingStatusEnum
 )
@@ -53,11 +53,12 @@ from schemas import (
     AlertResponse, SystemKpisResponse, ModelThresholdsResponse,
     ForensicMatchResponse, AttendanceRecordResponse,
     DuplicateCandidateResponse, TrajectoryNodeResponse, SubjectTrajectoryResponse,
+    MovementEdgeResponse, MovementNetworkResponse,
     FootfallBucketResponse, DemographicSliceResponse, SystemKpisFullResponse,
     ForensicMatchFullResponse, AttendanceRecordFullResponse,
     ForensicMatchFullResponse, AttendanceRecordFullResponse,
     AlertAcknowledgeRequest, ProfileMergeRequest, ProfileCreateRequest,
-    DetectionCreateRequest
+    DetectionCreateRequest, ForensicVectorSearchRequest
 )
 from websocket import manager
 
@@ -245,7 +246,7 @@ async def lifespan(app: FastAPI):
     
     should_load_ai = (
         InsightFaceDetector is not None
-        and (settings.enable_forensic_search or not os.environ.get("RENDER"))
+        and (settings.enable_forensic_search or settings.enable_edge_pipelines)
     )
 
     if should_load_ai:
@@ -255,8 +256,9 @@ async def lifespan(app: FastAPI):
             ai_models['detector'] = detector
             logger.info("AI Models Loaded")
 
-            # ---- Start camera pipelines for live streaming ----
-            if Recognizer is not None and DetectionLogger is not None:
+            # Embedded camera pipelines are opt-in; the normal local workflow
+            # runs the edge process separately from the API.
+            if settings.enable_edge_pipelines and Recognizer is not None and DetectionLogger is not None:
                 try:
                     cfg = _load_recognition_config()
                     root = Path(__file__).resolve().parent.parent / "facial_recognition"
@@ -402,6 +404,34 @@ async def create_detection(
     profile = None
     profile, profile_id, status = resolve_detection_identity(db, req.identity)
 
+    if profile_id:
+        previous = db.query(Detection).filter(
+            Detection.profile_id == profile_id,
+            Detection.timestamp < req.timestamp,
+        ).order_by(Detection.timestamp.desc()).first()
+        if previous and previous.camera_id != req.camera_id:
+            previous_timestamp = previous.timestamp
+            if previous_timestamp.tzinfo is None and req.timestamp.tzinfo is not None:
+                previous_timestamp = previous_timestamp.replace(tzinfo=req.timestamp.tzinfo)
+            elif previous_timestamp.tzinfo is not None and req.timestamp.tzinfo is None:
+                previous_timestamp = previous_timestamp.replace(tzinfo=None)
+            travel_seconds = (req.timestamp - previous_timestamp).total_seconds()
+            config = _load_recognition_config()
+            routes = config.get("camera_routes", {}) or {}
+            allowed_targets = routes.get(previous.camera_id)
+            max_travel = int(config.get("max_camera_travel_seconds", 300))
+            route_allowed = allowed_targets is None or req.camera_id in allowed_targets
+            if 0 < travel_seconds <= max_travel and route_allowed:
+                db.add(CameraTransition(
+                    id=str(uuid.uuid4()),
+                    profile_id=profile_id,
+                    from_camera_id=previous.camera_id,
+                    to_camera_id=req.camera_id,
+                    detected_at=req.timestamp,
+                    travel_seconds=travel_seconds,
+                    confidence=req.confidence,
+                ))
+
     if profile is not None:
         profile.last_seen = req.timestamp
 
@@ -445,6 +475,36 @@ async def create_detection(
     asyncio.create_task(manager.broadcast("kpis", {"refresh": True}))
 
     return DetectionResponse.from_orm(detection)
+
+
+@app.get("/api/analytics/movement-network", response_model=MovementNetworkResponse)
+def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
+    """Return observed identified-person movement between cameras."""
+    start_time = datetime.utcnow() - timedelta(hours=hours)
+    rows = db.query(
+        CameraTransition.from_camera_id,
+        CameraTransition.to_camera_id,
+        func.count(CameraTransition.id).label("count"),
+        func.max(CameraTransition.detected_at).label("last_seen"),
+        func.avg(CameraTransition.travel_seconds).label("average_travel_seconds"),
+    ).filter(
+        CameraTransition.detected_at >= start_time,
+    ).group_by(
+        CameraTransition.from_camera_id,
+        CameraTransition.to_camera_id,
+    ).order_by(func.max(CameraTransition.detected_at).desc()).all()
+
+    camera_ids = {row.from_camera_id for row in rows} | {row.to_camera_id for row in rows}
+    cameras = {camera.id: camera for camera in db.query(Camera).filter(Camera.id.in_(camera_ids)).all()}
+    return MovementNetworkResponse(edges=[MovementEdgeResponse(
+        fromCameraId=row.from_camera_id,
+        fromCameraName=cameras.get(row.from_camera_id).name if cameras.get(row.from_camera_id) else row.from_camera_id,
+        toCameraId=row.to_camera_id,
+        toCameraName=cameras.get(row.to_camera_id).name if cameras.get(row.to_camera_id) else row.to_camera_id,
+        count=int(row.count),
+        lastSeen=row.last_seen,
+        averageTravelSeconds=round(float(row.average_travel_seconds), 1),
+    ) for row in rows])
 
 
 # ==================== Health Check ====================
@@ -928,6 +988,122 @@ async def websocket_kpis(websocket: WebSocket):
 
 # ==================== Analytics & Forensic ====================
 
+def run_forensic_vector_query(
+    db: Session,
+    target_embedding: List[float],
+    threshold: float = 0.60,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    camera_ids: Optional[List[str]] = None,
+    gender: Optional[str] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+    wearing_mask: Optional[bool] = None,
+    wearing_glasses: Optional[bool] = None,
+) -> list[ForensicMatchResponse]:
+    """Search enrolled gallery embeddings and annotate matches from detection history."""
+    if len(target_embedding) != 512:
+        raise HTTPException(status_code=422, detail="Probe embedding must contain 512 values.")
+
+    max_distance = 1.0 - threshold
+    camera_filter = [camera_id.strip() for camera_id in (camera_ids or []) if camera_id.strip()]
+
+    detection_filters = []
+    if date_from is not None:
+        detection_filters.append(Detection.timestamp >= date_from)
+    if date_to is not None:
+        detection_filters.append(Detection.timestamp <= date_to)
+    if camera_filter:
+        detection_filters.append(Detection.camera_id.in_(camera_filter))
+    if gender and gender.lower() != "all":
+        detection_filters.append(Detection.gender == parse_gender(gender))
+    if age_min is not None:
+        detection_filters.append(Detection.age >= age_min)
+    if age_max is not None:
+        detection_filters.append(Detection.age <= age_max)
+    if wearing_mask is True:
+        detection_filters.append(Detection.wearing_mask.is_(True))
+    if wearing_glasses is True:
+        detection_filters.append(Detection.wearing_glasses.is_(True))
+
+    distance_expr = Embedding.vector.cosine_distance(target_embedding)
+    query = db.query(
+        Profile,
+        distance_expr.label("distance")
+    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
+        distance_expr <= max_distance
+    )
+
+    if detection_filters:
+        matching_profile_ids = select(Detection.profile_id).filter(
+            Detection.profile_id.isnot(None),
+            *detection_filters,
+        ).distinct()
+        query = query.filter(Profile.id.in_(matching_profile_ids))
+
+    results = query.order_by("distance").limit(25).all()
+
+    matches = []
+    seen = set()
+    for profile, distance in results:
+        if profile.id in seen:
+            continue
+        seen.add(profile.id)
+        latest_detection_query = db.query(Detection).filter(
+            Detection.profile_id == profile.id
+        )
+        if detection_filters:
+            latest_detection_query = latest_detection_query.filter(*detection_filters)
+        latest_detection = latest_detection_query.order_by(
+            Detection.timestamp.desc()
+        ).first()
+        matches.append(
+            ForensicMatchResponse(
+                profile_id=profile.id,
+                profile_name=profile.name,
+                role=profile.role.value if profile.role else None,
+                match_score=1.0 - float(distance),
+                embeddings_matched=profile.embedding_count,
+                last_seen=(
+                    latest_detection.timestamp
+                    if latest_detection
+                    else profile.last_seen
+                ),
+                camera_name=(
+                    latest_detection.camera.name
+                    if latest_detection and latest_detection.camera
+                    else None
+                ),
+                avatarTone=snapshot_tone_for(profile.id),
+            )
+        )
+        if len(matches) >= 10:
+            break
+    return matches
+
+
+@app.post("/api/internal/forensic/search-vector", response_model=list[ForensicMatchResponse])
+def run_forensic_vector_search(
+    req: ForensicVectorSearchRequest,
+    db: Session = Depends(get_db),
+    api_key: str = Depends(verify_edge_node)
+):
+    """Run forensic search from a probe embedding generated by an edge node."""
+    return run_forensic_vector_query(
+        db=db,
+        target_embedding=[float(v) for v in req.embedding],
+        threshold=req.threshold,
+        date_from=req.date_from,
+        date_to=req.date_to,
+        camera_ids=req.camera_ids,
+        gender=req.gender,
+        age_min=req.age_min,
+        age_max=req.age_max,
+        wearing_mask=req.wearing_mask,
+        wearing_glasses=req.wearing_glasses,
+    )
+
+
 @app.post("/api/forensic/search", response_model=list[ForensicMatchResponse])
 async def run_forensic_search(
     image: UploadFile = File(None),
@@ -962,87 +1138,24 @@ async def run_forensic_search(
             status_code=422,
             detail="No face embedding could be extracted from the uploaded image.",
         )
-    
-    max_distance = 1.0 - threshold
-    camera_filter = [
-        camera_id.strip()
-        for camera_id in (camera_ids or "").split(",")
-        if camera_id.strip()
-    ]
 
-    detection_filters = []
-    if date_from is not None:
-        detection_filters.append(Detection.timestamp >= date_from)
-    if date_to is not None:
-        detection_filters.append(Detection.timestamp <= date_to)
-    if camera_filter:
-        detection_filters.append(Detection.camera_id.in_(camera_filter))
-    if gender and gender.lower() != "all":
-        detection_filters.append(Detection.gender == parse_gender(gender))
-    if age_min is not None:
-        detection_filters.append(Detection.age >= age_min)
-    if age_max is not None:
-        detection_filters.append(Detection.age <= age_max)
-    if wearing_mask is True:
-        detection_filters.append(Detection.wearing_mask.is_(True))
-    if wearing_glasses is True:
-        detection_filters.append(Detection.wearing_glasses.is_(True))
-
-    distance_expr = Embedding.vector.cosine_distance(target_embedding.tolist())
-    query = db.query(
-        Profile,
-        distance_expr.label("distance")
-    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
-        distance_expr <= max_distance
+    return run_forensic_vector_query(
+        db=db,
+        target_embedding=target_embedding.tolist(),
+        threshold=threshold,
+        date_from=date_from,
+        date_to=date_to,
+        camera_ids=[
+            camera_id.strip()
+            for camera_id in (camera_ids or "").split(",")
+            if camera_id.strip()
+        ],
+        gender=gender,
+        age_min=age_min,
+        age_max=age_max,
+        wearing_mask=wearing_mask,
+        wearing_glasses=wearing_glasses,
     )
-
-    if detection_filters:
-        matching_profile_ids = select(Detection.profile_id).filter(
-            Detection.profile_id.isnot(None),
-            *detection_filters,
-        ).distinct()
-        query = query.filter(Profile.id.in_(matching_profile_ids))
-    
-    # pgvector '<=>' operator is cosine distance
-    results = query.order_by("distance").limit(25).all()
-    
-    matches = []
-    seen = set()
-    for profile, distance in results:
-        if profile.id in seen:
-            continue
-        seen.add(profile.id)
-        latest_detection_query = db.query(Detection).filter(
-            Detection.profile_id == profile.id
-        )
-        if detection_filters:
-            latest_detection_query = latest_detection_query.filter(*detection_filters)
-        latest_detection = latest_detection_query.order_by(
-            Detection.timestamp.desc()
-        ).first()
-        matches.append(
-            ForensicMatchResponse(
-                profile_id=profile.id,
-                profile_name=profile.name,
-                role=profile.role.value if profile.role else None,
-                match_score=1.0 - distance,
-                embeddings_matched=profile.embedding_count,
-                last_seen=(
-                    latest_detection.timestamp
-                    if latest_detection
-                    else profile.last_seen
-                ),
-                camera_name=(
-                    latest_detection.camera.name
-                    if latest_detection and latest_detection.camera
-                    else None
-                ),
-                avatarTone=snapshot_tone_for(profile.id),
-            )
-        )
-        if len(matches) >= 10:
-            break
-    return matches
 
 @app.get("/api/analytics/duplicates", response_model=list[DuplicateCandidateResponse])
 def get_duplicates(db: Session = Depends(get_db)):
@@ -1171,18 +1284,15 @@ def get_gender_distribution(db: Session = Depends(get_db)):
 def get_attendance(days: int = Query(7), db: Session = Depends(get_db)):
     start_time = datetime.utcnow() - timedelta(days=days)
     
-    # Cast timestamp to date for grouping
-    from sqlalchemy import cast, Date
     results = db.query(
         Detection.profile_id,
-        cast(Detection.timestamp, Date).label('date'),
         func.min(Detection.timestamp).label('check_in'),
         func.max(Detection.timestamp).label('check_out'),
         func.count(Detection.id).label('total_sightings'),
     ).filter(
         Detection.profile_id != None,
         Detection.timestamp >= start_time
-    ).group_by(Detection.profile_id, cast(Detection.timestamp, Date)).all()
+    ).group_by(Detection.profile_id).all()
 
     if not results:
         return []

@@ -81,6 +81,8 @@ class Camera(Base):
     # Relationships
     detections = relationship("Detection", back_populates="camera")
     alerts = relationship("Alert", back_populates="camera")
+    outgoing_transitions = relationship("CameraTransition", foreign_keys="CameraTransition.from_camera_id", back_populates="from_camera")
+    incoming_transitions = relationship("CameraTransition", foreign_keys="CameraTransition.to_camera_id", back_populates="to_camera")
 
 
 class Profile(Base):
@@ -101,6 +103,7 @@ class Profile(Base):
     # Relationships
     embeddings = relationship("Embedding", back_populates="profile", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="profile")
+    alerts = relationship("Alert", back_populates="profile")
 
 
 class Embedding(Base):
@@ -158,6 +161,25 @@ class Alert(Base):
     # Relationships
     camera = relationship("Camera", back_populates="alerts")
     detection = relationship("Detection", back_populates="alert")
+    profile = relationship("Profile", back_populates="alerts")
+
+
+class CameraTransition(Base):
+    """Observed movement of an identified person between two cameras."""
+    __tablename__ = "camera_transitions"
+
+    id = Column(String, primary_key=True, index=True)
+    profile_id = Column(String, ForeignKey("profiles.id"), nullable=False, index=True)
+    from_camera_id = Column(String, ForeignKey("cameras.id"), nullable=False, index=True)
+    to_camera_id = Column(String, ForeignKey("cameras.id"), nullable=False, index=True)
+    detected_at = Column(DateTime, nullable=False, index=True)
+    travel_seconds = Column(Float, nullable=False)
+    confidence = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    profile = relationship("Profile")
+    from_camera = relationship("Camera", foreign_keys=[from_camera_id], back_populates="outgoing_transitions")
+    to_camera = relationship("Camera", foreign_keys=[to_camera_id], back_populates="incoming_transitions")
 
 
 class ModelThreshold(Base):

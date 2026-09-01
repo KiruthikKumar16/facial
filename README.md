@@ -77,7 +77,7 @@ Run these from inside the `facial_recognition/` folder:
 
 ### 3. Running the FastAPI Backend
 - **`.\scripts\run-backend.ps1`** (from root): A PowerShell wrapper to launch the Python backend.
-- **`uvicorn main:app --reload`** (from `backend/`): Manually starts the FastAPI server on `localhost:8000`.
+- **`uvicorn main:app --reload`** (from `backend/`): Manually starts the FastAPI server on `localhost:1223`.
 
 ### 4. Running the Next.js Dashboard
 - **`.\scripts\run-frontend.ps1`** (from root): A PowerShell wrapper to launch the web interface.

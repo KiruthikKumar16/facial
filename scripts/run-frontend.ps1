@@ -8,14 +8,13 @@ Write-Host ""
 Write-Host "Dashboard will be available at:" -ForegroundColor Cyan
 Write-Host "  → http://localhost:3000" -ForegroundColor Gray
 Write-Host ""
-Write-Host "🔗 Make sure backend is running on port 8000!" -ForegroundColor Yellow
+Write-Host "🔗 Make sure backend is running on port 1223!" -ForegroundColor Yellow
 Write-Host ""
 
-cd facial-recognition-dashboard
-
-$pnpmExists = $null -ne (Get-Command pnpm -ErrorAction SilentlyContinue)
-if ($pnpmExists) {
-    pnpm dev
-} else {
+$root = Split-Path -Parent $PSScriptRoot
+Push-Location (Join-Path $root "facial-recognition-dashboard")
+try {
     npm run dev
+} finally {
+    Pop-Location
 }

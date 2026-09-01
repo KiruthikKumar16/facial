@@ -41,23 +41,42 @@ yaml: Any = yaml
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-from capture import CameraCapture
-from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
-from logger import DetectionLogger
-from recognizer import Recognizer
-from pending import PendingSaver
-from cli import (
-    MAX_CAMERA_HEIGHT,
-    MAX_CAMERA_WIDTH,
-    MAX_DET_SIZE,
-    MAX_MODEL,
-    parse_run_args,
-    resolve_camera_size,
-    resolve_det_size,
-    resolve_model,
-)
-from overlay import draw_text_block
-from edge_stream import EdgeFramePublisher
+try:
+    from .capture import CameraCapture
+    from .detector import InsightFaceDetector
+    from .logger import DetectionLogger
+    from .recognizer import Recognizer
+    from .pending import PendingSaver
+    from .cli import (
+        MAX_CAMERA_HEIGHT,
+        MAX_CAMERA_WIDTH,
+        MAX_DET_SIZE,
+        MAX_MODEL,
+        parse_run_args,
+        resolve_camera_size,
+        resolve_det_size,
+        resolve_model,
+    )
+    from .overlay import draw_text_block
+    from .edge_stream import EdgeFramePublisher
+except ImportError:
+    from capture import CameraCapture
+    from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
+    from logger import DetectionLogger
+    from recognizer import Recognizer
+    from pending import PendingSaver
+    from cli import (
+        MAX_CAMERA_HEIGHT,
+        MAX_CAMERA_WIDTH,
+        MAX_DET_SIZE,
+        MAX_MODEL,
+        parse_run_args,
+        resolve_camera_size,
+        resolve_det_size,
+        resolve_model,
+    )
+    from overlay import draw_text_block
+    from edge_stream import EdgeFramePublisher
 
 
 class CameraPipeline:

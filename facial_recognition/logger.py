@@ -59,7 +59,7 @@ class DetectionLogger:
         import json
         import time
         import os
-        api_url = os.environ.get("API_URL", "http://localhost:8000").rstrip('/')
+        api_url = os.environ.get("API_URL", "http://localhost:1223").rstrip('/')
         api_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
         
         # Internal queue to handle retries

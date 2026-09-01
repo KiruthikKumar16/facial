@@ -129,6 +129,20 @@ export interface SubjectTrajectory {
   path: TrajectoryNode[]
 }
 
+export interface MovementEdge {
+  fromCameraId: string
+  fromCameraName: string
+  toCameraId: string
+  toCameraName: string
+  count: number
+  lastSeen: string
+  averageTravelSeconds: number
+}
+
+export interface MovementNetwork {
+  edges: MovementEdge[]
+}
+
 export interface ForensicMatch {
   profileId: string | null
   profileName: string

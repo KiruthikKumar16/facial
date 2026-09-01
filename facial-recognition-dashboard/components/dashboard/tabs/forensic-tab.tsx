@@ -4,6 +4,8 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   fetchCameras,
+  fetchFootfall,
+  fetchMovementNetwork,
   fetchTrajectory,
   runForensicSearch,
   type ForensicSearchPayload,
@@ -23,15 +25,55 @@ import { formatTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { ForensicMatch, Gender } from '@/lib/types'
 import {
+  ChartColumnBig,
   Glasses,
   ImageUp,
   MapPin,
   Route,
+  ArrowRight,
   ScanSearch,
   UploadCloud,
   VenetianMask,
   X,
 } from 'lucide-react'
+
+function FootfallSummary() {
+  const { data = [] } = useQuery({
+    queryKey: ['forensic-footfall'],
+    queryFn: () => fetchFootfall(1),
+  })
+  const peak = Math.max(...data.map((bucket) => bucket.detections), 1)
+
+  return (
+    <Card className="gap-0 py-0">
+      <CardHeader className="border-b border-border py-3">
+        <SectionHeading
+          icon={ChartColumnBig}
+          title="Recent Footfall"
+          description="Hourly detections across all camera nodes"
+        />
+      </CardHeader>
+      <CardContent className="p-4">
+        <div className="flex h-32 items-end gap-1">
+          {data.map((bucket) => (
+            <div key={bucket.hour} className="group flex min-w-0 flex-1 flex-col items-center gap-1">
+              <div
+                className="w-full rounded-t-sm bg-info/70 transition-colors group-hover:bg-info"
+                style={{ height: `${Math.max((bucket.detections / peak) * 100, bucket.detections ? 6 : 1)}%` }}
+                title={`${bucket.hour}: ${bucket.detections} detections`}
+              />
+              <span className="truncate text-[9px] text-muted-foreground">{bucket.hour}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex gap-4 text-xs text-muted-foreground">
+          <span>Recognized: <strong className="text-foreground">{data.reduce((sum, bucket) => sum + bucket.recognized, 0)}</strong></span>
+          <span>Unknown: <strong className="text-foreground">{data.reduce((sum, bucket) => sum + bucket.unknown, 0)}</strong></span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
 
 function Dropzone({
   file,
@@ -226,6 +268,47 @@ function TrajectoryTimeline() {
   )
 }
 
+function MovementNetwork() {
+  const { data } = useQuery({
+    queryKey: ['movement-network'],
+    queryFn: () => fetchMovementNetwork(24),
+  })
+
+  return (
+    <Card className="gap-0 py-0">
+      <CardHeader className="border-b border-border py-3">
+        <SectionHeading
+          icon={Route}
+          title="Camera Movement Network"
+          description="Identified-person handoffs in the last 24 hours"
+        />
+      </CardHeader>
+      <CardContent className="p-4">
+        {data?.edges.length ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {data.edges.map((edge) => (
+              <div key={`${edge.fromCameraId}-${edge.toCameraId}`} className="flex items-center gap-2 rounded-lg border border-border bg-card/50 p-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{edge.fromCameraName}</p>
+                  <p className="font-mono text-[11px] text-muted-foreground">{edge.fromCameraId}</p>
+                </div>
+                <ArrowRight className="size-4 shrink-0 text-info" />
+                <div className="min-w-0 flex-1 text-right">
+                  <p className="truncate text-sm font-medium">{edge.toCameraName}</p>
+                  <p className="font-mono text-[11px] text-muted-foreground">{edge.toCameraId}</p>
+                </div>
+                <span className="rounded bg-info/10 px-1.5 py-1 font-mono text-[10px] text-info">{edge.count}x</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No cross-camera handoffs recorded yet.</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ForensicTab() {
   const { data: cameras = [] } = useQuery({
     queryKey: ['cameras'],
@@ -254,6 +337,8 @@ export function ForensicTab() {
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[420px_1fr]">
       {/* Query builder */}
       <div className="flex flex-col gap-4">
+        <MovementNetwork />
+        <FootfallSummary />
         <Card className="gap-0 py-0">
           <CardHeader className="border-b border-border py-3">
             <SectionHeading
