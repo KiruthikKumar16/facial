@@ -2,6 +2,7 @@ import os
 import signal
 import threading
 import time
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, cast
 
@@ -204,6 +205,14 @@ def build_camera_sources(config: Dict[str, Any], webcam_index: Optional[int] = N
     rtsp_urls = cast(List[Any], config.get('rtsp_urls', []) or [])
     for idx, url in enumerate(rtsp_urls):
         sources.append((f'rtsp-{idx + 1}', str(url)))
+    dvr_ip = os.environ.get('DVR_IP', '').strip()
+    dvr_username = os.environ.get('DVR_USERNAME', '').strip()
+    dvr_password = os.environ.get('DVR_PASSWORD', '')
+    if dvr_ip and dvr_username and dvr_password:
+        dvr_port = os.environ.get('DVR_RTSP_PORT', '554').strip()
+        dvr_path = os.environ.get('DVR_RTSP_PATH', 'Streaming/Channels/101').strip().lstrip('/')
+        source = f'rtsp://{quote(dvr_username, safe="")}:{quote(dvr_password, safe="")}@{dvr_ip}:{dvr_port}/{dvr_path}'
+        sources.append(('dvr-1', source))
     return sources
 
 

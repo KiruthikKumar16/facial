@@ -9,7 +9,8 @@ rtsp_urls:
 camera_routes:
   webcam: [rtsp-1]
   rtsp-1: [rtsp-2]
-  rtsp-2: []
+  rtsp-2: [dvr-1]
+  dvr-1: []
 max_camera_travel_seconds: 300
 
 # Cosine similarity threshold for identity matching

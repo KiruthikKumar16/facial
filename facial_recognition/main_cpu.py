@@ -12,6 +12,7 @@ import os
 import signal
 import threading
 import time
+from urllib.parse import quote
 from typing import Any, Deque, Dict, List, Optional, Tuple, cast
 import logging
 
@@ -431,6 +432,14 @@ def build_sources(cfg: Dict[str, Any], webcam_index: Optional[int] = None) -> Li
     sources.append(('webcam', int(webcam_index if webcam_index is not None else cfg.get('webcam_index', 0))))
     for idx, url in enumerate(cfg.get('rtsp_urls', []) or []):
         sources.append((f'rtsp-{idx+1}', str(url)))
+    dvr_ip = os.environ.get('DVR_IP', '').strip()
+    dvr_username = os.environ.get('DVR_USERNAME', '').strip()
+    dvr_password = os.environ.get('DVR_PASSWORD', '')
+    if dvr_ip and dvr_username and dvr_password:
+        dvr_port = os.environ.get('DVR_RTSP_PORT', '554').strip()
+        dvr_path = os.environ.get('DVR_RTSP_PATH', 'Streaming/Channels/101').strip().lstrip('/')
+        source = f'rtsp://{quote(dvr_username, safe="")}:{quote(dvr_password, safe="")}@{dvr_ip}:{dvr_port}/{dvr_path}'
+        sources.append(('dvr-1', source))
     return sources
 
 
