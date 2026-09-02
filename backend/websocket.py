@@ -2,7 +2,7 @@
 from typing import Set, List, Dict, Any
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class WebSocketConnectionManager:
         
         payload = json.dumps({
             "type": channel,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": message,
         })
         

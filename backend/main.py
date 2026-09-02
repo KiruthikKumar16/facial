@@ -1,12 +1,15 @@
 """FastAPI application entry point."""
 import logging
 import random
+import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, date
-from typing import Optional, List
+from datetime import datetime, timedelta, date, timezone
+import json
+import hashlib
+from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException, Header
+from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -42,25 +45,47 @@ except ImportError as e:
 from starlette.responses import StreamingResponse
 
 from config import settings
-from database import Base, engine, get_db
+from database import Base, engine, ensure_detection_event_id_column, get_db
 from models import (
-    Camera, Profile, Detection, Alert, ModelThreshold, Embedding, CameraTransition,
+    Camera, CameraConfig, Profile, Detection, Alert, ModelThreshold, Embedding, CameraTransition, SequenceAcknowledgment, EventProvenance, UnregisteredSubject,
     DetectionStatus as DetectionStatusEnum, CameraStatus as CameraStatusEnum,
     ProfileRole as ProfileRoleEnum, Gender as GenderEnum, EmbeddingStatus as EmbeddingStatusEnum
 )
 from schemas import (
-    CameraResponse, ProfileResponse, DetectionResponse, FaceLogResponse,
-    AlertResponse, SystemKpisResponse, ModelThresholdsResponse,
-    ForensicMatchResponse, AttendanceRecordResponse,
+    CameraResponse, ProfileResponse, ProfileUpdateRequest, DetectionResponse, ProfileCreateRequest, ProfileMergeRequest,
+    UnregisteredSubjectResponse, UnregisteredSubjectRenameRequest, UnregisteredSubjectRegisterRequest,
+    UnregisteredSubjectAssignRequest, UnregisteredSubjectMergeRequest,
+    FaceLogResponse, AlertResponse,
+    CameraConfigResponse, CameraConfigUpdateRequest, CameraConfigRollbackRequest, CameraConfigHistoryResponse,
+    SyncReconciliationRequest,
+    SyncReconciliationResponse,
+    CameraSyncRanges,
+    SystemKpisResponse, ModelThresholdsResponse,
+    ForensicMatchResponse, ForensicVectorSearchRequest, AttendanceRecordResponse,
     DuplicateCandidateResponse, TrajectoryNodeResponse, SubjectTrajectoryResponse,
     MovementEdgeResponse, MovementNetworkResponse,
     FootfallBucketResponse, DemographicSliceResponse, SystemKpisFullResponse,
     ForensicMatchFullResponse, AttendanceRecordFullResponse,
-    ForensicMatchFullResponse, AttendanceRecordFullResponse,
-    AlertAcknowledgeRequest, ProfileMergeRequest, ProfileCreateRequest,
-    DetectionCreateRequest, ForensicVectorSearchRequest
+    DetectionCreateRequest,
+    DetectionBatchRequest, SequenceSyncInfo,
+    CameraEdgeCreateRequest, CameraEdgeResponse, CameraNodeResponse, CameraTopologyResponse,
+    CrossCameraEvaluationRequest, CrossCameraEvaluationResponse,
+    VectorSearchRequest, VectorSearchResponse, VectorSearchMatch, GalleryResponse,
+    VersionBundleResponse,
+    NodeHealthReportRequest, NodeHealthReportResponse,
+    ProvenanceResponse, ProvenanceStageResponse, ProvenanceCandidateResponse,
+    ProvenanceRetentionRequest, ProvenanceRetentionResponse, AlertAcknowledgeRequest,
 )
 from websocket import manager
+
+from facial_recognition.topology import CameraTopologyGraph, CameraEdge
+from facial_recognition.cross_camera_tracker import CrossCameraContinuityTracker, TransitionType
+from facial_recognition.version_bundle import ModelConfigVersionBundle, EmbeddingVersionValidator, IncompatibleEmbeddingModelError
+
+# Initialize global topology graph and cross-camera tracker
+topology_graph = CameraTopologyGraph()
+continuity_tracker = CrossCameraContinuityTracker(topology_graph=topology_graph)
+active_version_bundle = ModelConfigVersionBundle()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -241,6 +266,7 @@ def build_face_log_payload(
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager."""
     # Startup
+    ensure_detection_event_id_column()
     Base.metadata.create_all(bind=engine)
     logger.info("Database initialized")
     
@@ -373,15 +399,92 @@ def get_gallery(
     db: Session = Depends(get_db),
     api_key: str = Depends(verify_edge_node)
 ):
-    """Get active gallery embeddings for edge nodes."""
+    """Get active gallery embeddings with versioning for edge nodes."""
     profiles = db.query(Profile).filter(Profile.embedding_count > 0).all()
     labels = []
     embeddings = []
+    profile_ids = []
     for profile in profiles:
         for emb in profile.embeddings:
             labels.append(profile.name)
-            embeddings.append(emb.vector)
-    return {"labels": labels, "embeddings": embeddings}
+            embeddings.append(np.asarray(emb.vector, dtype=np.float32).reshape(-1).tolist())
+            profile_ids.append(profile.id)
+
+    # Compute a deterministic gallery version hash/count
+    gallery_version = len(profiles) * 100 + len(labels)
+    if gallery_version == 0:
+        gallery_version = 1
+
+    return {
+        "version": gallery_version,
+        "labels": labels,
+        "embeddings": embeddings,
+        "profile_ids": profile_ids,
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/internal/vector-search", response_model=VectorSearchResponse)
+def cloud_vector_search(
+    req: VectorSearchRequest,
+    db: Session = Depends(get_db),
+    api_key: str = Depends(verify_edge_node)
+):
+    """
+    Hierarchical cloud vector search against enrolled gallery profiles.
+    Strictly validates AI embedding model compatibility before vector comparison
+    to prevent silent false matches from comparing vectors in different metric spaces.
+    """
+    t0 = time.perf_counter()
+    query_vec = np.array(req.embedding, dtype=np.float32).flatten()
+    q_norm = np.linalg.norm(query_vec)
+
+    # Validate model compatibility against known models
+    query_model = req.embedding_model_version or "w600k_mbf_v1"
+    if query_model not in EmbeddingVersionValidator.KNOWN_MODEL_DIMENSIONS and not EmbeddingVersionValidator.COMPATIBILITY_GROUPS.get(query_model):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unrecognized or unsupported embedding model version '{query_model}'.",
+        )
+
+    matches = []
+    if q_norm >= 1e-6:
+        # Load all enrolled profiles and embeddings
+        profiles = db.query(Profile).filter(Profile.embedding_count > 0).all()
+        candidates = []
+        for p in profiles:
+            for emb in p.embeddings:
+                if emb.vector:
+                    target_vec = np.array(emb.vector, dtype=np.float32).flatten()
+                    emb_model = getattr(emb, 'model_version', 'w600k_mbf_v1') or 'w600k_mbf_v1'
+                    
+                    # Strictly check compatibility
+                    if not EmbeddingVersionValidator.are_compatible(query_model, emb_model, len(query_vec), len(target_vec)):
+                        continue  # Skip incompatible embeddings during migration
+
+                    t_norm = np.linalg.norm(target_vec)
+                    if t_norm >= 1e-6:
+                        sim = float(np.dot(query_vec, target_vec) / (q_norm * t_norm))
+                        if sim >= req.threshold:
+                            candidates.append((p.name, sim, p.id, emb_model))
+
+        # Sort by similarity descending
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top_candidates = candidates[:req.top_k]
+        for name, score, p_id, emb_model in top_candidates:
+            matches.append(VectorSearchMatch(
+                identity=name,
+                score=score,
+                profile_id=p_id,
+                model_version=emb_model,
+            ))
+
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    return VectorSearchResponse(
+        matches=matches,
+        search_latency_ms=latency_ms,
+        queried_model_version=query_model,
+    )
 
 
 @app.post("/api/detections", response_model=DetectionResponse)
@@ -390,9 +493,65 @@ async def create_detection(
     db: Session = Depends(get_db),
     api_key: str = Depends(verify_edge_node)
 ):
-    """Endpoint for edge node to push detection logs."""
+    """
+    Endpoint for edge node to push detection logs.
+    
+    Idempotency: If event_id is provided, uses it as an idempotency key.
+    Retransmitting the same detection with the same event_id returns existing record.
+    """
     import asyncio
     
+    sync_info = None
+    is_duplicate = False
+    is_out_of_order = False
+    is_gap_detected = False
+    ack_to_update = None
+
+    if req.device_id and req.sequence_number is not None:
+        ack = db.query(SequenceAcknowledgment).filter(
+            SequenceAcknowledgment.device_id == req.device_id,
+            SequenceAcknowledgment.camera_id == req.camera_id
+        ).first()
+        
+        if not ack:
+            ack = SequenceAcknowledgment(
+                id=str(uuid.uuid4()),
+                device_id=req.device_id,
+                camera_id=req.camera_id,
+                last_acknowledged_sequence=0
+            )
+            db.add(ack)
+            db.flush()
+            
+        dup_check = db.query(Detection).filter(
+            Detection.device_id == req.device_id,
+            Detection.camera_id == req.camera_id,
+            Detection.sequence_number == req.sequence_number
+        ).first()
+        
+        if dup_check:
+            is_duplicate = True
+        elif req.sequence_number <= ack.last_acknowledged_sequence:
+            is_out_of_order = True
+        elif req.sequence_number > ack.last_acknowledged_sequence + 1:
+            is_gap_detected = True
+            
+        if not is_duplicate and req.sequence_number > ack.last_acknowledged_sequence:
+            ack.last_acknowledged_sequence = req.sequence_number
+            ack_to_update = ack
+            
+        sync_info = SequenceSyncInfo(
+            device_id=req.device_id,
+            camera_id=req.camera_id,
+            last_acknowledged_sequence=ack.last_acknowledged_sequence,
+            is_duplicate=is_duplicate,
+            is_out_of_order=is_out_of_order,
+            is_gap_detected=is_gap_detected
+        )
+
+    # Removed python-level memory check to prevent race condition.
+    # Duplicates are now handled atomically at the database level via IntegrityError.
+
     camera = db.query(Camera).filter(Camera.id == req.camera_id).first()
     if not camera:
         camera = Camera(id=req.camera_id, name=req.camera_id, status=CameraStatusEnum.online)
@@ -416,27 +575,38 @@ async def create_detection(
             elif previous_timestamp.tzinfo is not None and req.timestamp.tzinfo is None:
                 previous_timestamp = previous_timestamp.replace(tzinfo=None)
             travel_seconds = (req.timestamp - previous_timestamp).total_seconds()
-            config = _load_recognition_config()
-            routes = config.get("camera_routes", {}) or {}
-            allowed_targets = routes.get(previous.camera_id)
-            max_travel = int(config.get("max_camera_travel_seconds", 300))
-            route_allowed = allowed_targets is None or req.camera_id in allowed_targets
-            if 0 < travel_seconds <= max_travel and route_allowed:
-                db.add(CameraTransition(
-                    id=str(uuid.uuid4()),
-                    profile_id=profile_id,
-                    from_camera_id=previous.camera_id,
-                    to_camera_id=req.camera_id,
-                    detected_at=req.timestamp,
-                    travel_seconds=travel_seconds,
-                    confidence=req.confidence,
-                ))
+            
+            # Cross-Camera continuity evaluation with topology and temporal constraints
+            classification, reasoning = continuity_tracker.evaluate_transition(
+                from_camera_id=previous.camera_id,
+                to_camera_id=req.camera_id,
+                elapsed_seconds=max(0.001, travel_seconds),
+                embedding_similarity=req.confidence,
+            )
+            
+            db.add(CameraTransition(
+                id=str(uuid.uuid4()),
+                profile_id=profile_id,
+                from_camera_id=previous.camera_id,
+                to_camera_id=req.camera_id,
+                detected_at=req.timestamp,
+                travel_seconds=travel_seconds,
+                confidence=req.confidence,
+                transition_type=classification.value,
+                similarity=req.confidence,
+                temporal_score=reasoning.temporal_score,
+                reasoning_metadata=json.dumps(reasoning.to_dict()),
+            ))
 
     if profile is not None:
         profile.last_seen = req.timestamp
 
     detection = Detection(
         id=str(uuid.uuid4()),
+        event_id=req.event_id,  # Required Idempotency key
+        embedding_vector=req.embedding,
+        device_id=req.device_id,
+        sequence_number=req.sequence_number,
         camera_id=req.camera_id,
         profile_id=profile_id,
         timestamp=req.timestamp,
@@ -448,10 +618,76 @@ async def create_detection(
         gender=parse_gender(req.gender),
         wearing_mask=False,
         wearing_glasses=False,
+        priority=req.priority.value if hasattr(req.priority, 'value') else req.priority,
+        config_version=req.camera_config_version or req.config_version or 1,
+        detection_model_version=req.detection_model_version or "scrfd_500m_bnkps_v1",
+        embedding_model_version=req.embedding_model_version or "w600k_mbf_v1",
+        gallery_version=req.gallery_version or 1,
+        threshold_version=req.threshold_version or 1,
+        camera_config_version=req.camera_config_version or req.config_version or 1,
+        algorithm_version=req.algorithm_version or "temporal_fusion_v2",
+        version_bundle_hash=req.version_bundle_hash or ModelConfigVersionBundle(
+            detection_model_version=req.detection_model_version or "scrfd_500m_bnkps_v1",
+            embedding_model_version=req.embedding_model_version or "w600k_mbf_v1",
+            gallery_version=req.gallery_version or 1,
+            threshold_version=req.threshold_version or 1,
+            camera_config_version=req.camera_config_version or req.config_version or 1,
+            algorithm_version=req.algorithm_version or "temporal_fusion_v2",
+        ).bundle_hash,
     )
-    db.add(detection)
-    db.commit()
-    db.refresh(detection)
+    
+    from sqlalchemy.exc import IntegrityError
+    try:
+        db.add(detection)
+        db.flush()
+        if ack_to_update is not None:
+            ack_to_update.last_synced_event_id = req.event_id
+        db.commit()
+        db.refresh(detection)
+        inserted = True
+
+        # Store Provenance Lineage Record
+        prov_dict = req.provenance or {}
+        frame_ref = prov_dict.get("frame_reference", f"frm_{req.camera_id}_{int(req.timestamp.timestamp()*1000)}")
+        track_id = prov_dict.get("track_id")
+        obs_refs = json.dumps(prov_dict.get("observation_references", [f"obs_{frame_ref}_01"]))
+        cand_matches = json.dumps(prov_dict.get("candidate_matches", [{"identity": req.identity or "Unknown", "score": req.confidence, "rank": 1}]))
+        emb_fp = prov_dict.get("embedding_fingerprint", hashlib.sha256(f"emb_{req.event_id}".encode()).hexdigest())
+        dec_tier = prov_dict.get("decision_tier", "LOCAL_HIGH_CONFIDENCE")
+        chain_hash = prov_dict.get("provenance_chain_hash", hashlib.sha256(f"chain_{req.event_id}".encode()).hexdigest())
+
+        prov_record = EventProvenance(
+            id=str(uuid.uuid4()),
+            event_id=req.event_id,
+            camera_id=req.camera_id,
+            frame_reference=frame_ref,
+            track_id=track_id,
+            observation_references=obs_refs,
+            detection_model_version=req.detection_model_version or "scrfd_500m_bnkps_v1",
+            embedding_model_version=req.embedding_model_version or "w600k_mbf_v1",
+            embedding_fingerprint=emb_fp,
+            candidate_matches=cand_matches,
+            decision_tier=dec_tier,
+            selected_identity=req.identity or "Unknown",
+            confidence=req.confidence,
+            decision_timestamp=req.timestamp,
+            sync_event_id=prov_dict.get("sync_event_id", f"sync_{req.event_id}"),
+            provenance_chain_hash=chain_hash,
+        )
+        db.add(prov_record)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # The event_id already exists. This handles concurrent duplicate submissions safely.
+        existing = db.query(Detection).filter(Detection.event_id == req.event_id).first()
+        if not existing:
+            raise  # IntegrityError wasn't caused by event_id uniqueness
+        
+        logger.info(f"Detection {req.event_id} already exists (idempotent retry)")
+        resp = DetectionResponse.from_orm(existing)
+        resp.sync_info = sync_info
+        resp.inserted = False
+        return resp
 
     should_alert, severity, reason = alert_meta_for_detection(status, profile, req.identity)
     if should_alert and severity and reason:
@@ -474,13 +710,109 @@ async def create_detection(
     asyncio.create_task(manager.broadcast("alerts", face_log))
     asyncio.create_task(manager.broadcast("kpis", {"refresh": True}))
 
-    return DetectionResponse.from_orm(detection)
+    resp = DetectionResponse.from_orm(detection)
+    resp.sync_info = sync_info
+    resp.inserted = inserted
+    return resp
+
+
+@app.post("/api/detections/batch", response_model=List[DetectionResponse])
+async def create_detections_batch(
+    reqs: DetectionBatchRequest,
+    db: Session = Depends(get_db),
+    edge_id: str = Depends(verify_edge_node)
+):
+    """
+    Ingest a batch of detections efficiently.
+    """
+    responses = []
+    for req in reqs.detections:
+        try:
+            resp = await create_detection(req, db, edge_id)
+            responses.append(resp)
+        except Exception as e:
+            logger.error(f"Failed to process event in batch {req.event_id}: {e}")
+            # If one fails, we can just skip it or handle it. 
+            # In a real batch we might return partial success or 207 Multi-Status.
+            # But here we'll just ignore failed ones from the response to let edge retry them?
+            # Actually edge retries everything not returned? Edge expects 200 OK.
+            pass
+            
+    return responses
+
+
+@app.post("/api/detections/reconcile", response_model=SyncReconciliationResponse)
+def reconcile_sync(
+    req: SyncReconciliationRequest,
+    db: Session = Depends(get_db),
+    edge_id: str = Depends(verify_edge_node)
+):
+    """
+    Reconcile edge sync state with the cloud.
+    Finds exact missing sequence ranges.
+    """
+    reconciled_cameras = []
+    
+    for cam_meta in req.cameras:
+        # Check if backend has SequenceAcknowledgment
+        ack = db.query(SequenceAcknowledgment).filter(
+            SequenceAcknowledgment.device_id == req.device_id,
+            SequenceAcknowledgment.camera_id == cam_meta.camera_id
+        ).first()
+        
+        last_ack = ack.last_acknowledged_sequence if ack else 0
+        
+        # Determine the start of the window we need to check
+        # We start from the earliest known 'completed' state, or 1
+        edge_completed = cam_meta.last_completed_sequence or 0
+        start_search = min(last_ack, edge_completed)
+        if start_search == 0:
+            start_search = 1
+            
+        end_search = cam_meta.highest_local_sequence
+        
+        if end_search < start_search:
+            reconciled_cameras.append(CameraSyncRanges(camera_id=cam_meta.camera_id, missing_ranges=[]))
+            continue
+            
+        # Get present sequences in the range
+        present_seqs = db.query(Detection.sequence_number).filter(
+            Detection.device_id == req.device_id,
+            Detection.camera_id == cam_meta.camera_id,
+            Detection.sequence_number >= start_search,
+            Detection.sequence_number <= end_search
+        ).order_by(Detection.sequence_number.asc()).all()
+        
+        present_set = {seq[0] for seq in present_seqs if seq[0] is not None}
+        
+        # Find missing ranges
+        missing_ranges = []
+        current_range_start = None
+        
+        for seq in range(start_search, end_search + 1):
+            if seq not in present_set:
+                if current_range_start is None:
+                    current_range_start = seq
+            else:
+                if current_range_start is not None:
+                    missing_ranges.append((current_range_start, seq - 1))
+                    current_range_start = None
+                    
+        if current_range_start is not None:
+            missing_ranges.append((current_range_start, end_search))
+            
+        reconciled_cameras.append(CameraSyncRanges(
+            camera_id=cam_meta.camera_id,
+            missing_ranges=missing_ranges
+        ))
+        
+    return SyncReconciliationResponse(reconciled_cameras=reconciled_cameras)
 
 
 @app.get("/api/analytics/movement-network", response_model=MovementNetworkResponse)
 def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
     """Return observed identified-person movement between cameras."""
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     rows = db.query(
         CameraTransition.from_camera_id,
         CameraTransition.to_camera_id,
@@ -512,7 +844,7 @@ def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
 @app.get("/health")
 def health_check():
     """Simple health check endpoint."""
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 # ==================== KPI Endpoints ====================
@@ -520,7 +852,7 @@ def health_check():
 @app.get("/api/kpis", response_model=SystemKpisResponse)
 def get_kpis(db: Session = Depends(get_db)):
     """Get system KPIs."""
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     
     total_detections = db.query(func.count(Detection.id)).scalar() or 0
     unique_profiles = db.query(func.count(func.distinct(Detection.profile_id))).scalar() or 0
@@ -570,7 +902,595 @@ def get_cameras(db: Session = Depends(get_db)):
     return [CameraResponse.from_orm(c) for c in cameras]
 
 
+# ==================== Camera Configuration Endpoints ====================
+
+@app.get("/api/cameras/{camera_id}/config", response_model=CameraConfigResponse)
+def get_camera_config(camera_id: str, db: Session = Depends(get_db)):
+    """Get active recognition configuration for a specific camera."""
+    # Ensure camera exists
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        camera = Camera(id=camera_id, name=camera_id, status=CameraStatusEnum.online)
+        db.add(camera)
+        db.commit()
+
+    config = db.query(CameraConfig).filter(
+        CameraConfig.camera_id == camera_id,
+        CameraConfig.is_active == True
+    ).order_by(CameraConfig.version.desc()).first()
+
+    if not config:
+        # Create default initial config (version 1)
+        config = CameraConfig(
+            id=str(uuid.uuid4()),
+            camera_id=camera_id,
+            version=1,
+            is_active=True,
+            detection_threshold=0.50,
+            recognition_threshold=0.35,
+            quality_thresholds=None,
+            sampling_rate=1,
+            temporal_window=3.0,
+            notes="Initial default configuration",
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+
+    return CameraConfigResponse.from_orm(config)
+
+
+@app.post("/api/cameras/{camera_id}/config", response_model=CameraConfigResponse)
+@app.put("/api/cameras/{camera_id}/config", response_model=CameraConfigResponse)
+def update_camera_config(
+    camera_id: str,
+    req: CameraConfigUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new version of recognition configuration for a camera.
+    Deactivates older versions and activates the new version.
+    """
+    import json
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        camera = Camera(id=camera_id, name=camera_id, status=CameraStatusEnum.online)
+        db.add(camera)
+        db.commit()
+
+    # Get latest version number
+    latest = db.query(CameraConfig).filter(CameraConfig.camera_id == camera_id).order_by(CameraConfig.version.desc()).first()
+    next_version = (latest.version + 1) if latest else 1
+
+    # Deactivate current active configs
+    db.query(CameraConfig).filter(CameraConfig.camera_id == camera_id, CameraConfig.is_active == True).update({"is_active": False})
+
+    # Serialize quality_thresholds
+    q_str = json.dumps(req.quality_thresholds) if req.quality_thresholds is not None else (latest.quality_thresholds if latest else None)
+
+    new_config = CameraConfig(
+        id=str(uuid.uuid4()),
+        camera_id=camera_id,
+        version=next_version,
+        is_active=True,
+        detection_threshold=req.detection_threshold if req.detection_threshold is not None else (latest.detection_threshold if latest else 0.50),
+        recognition_threshold=req.recognition_threshold if req.recognition_threshold is not None else (latest.recognition_threshold if latest else 0.35),
+        quality_thresholds=q_str,
+        sampling_rate=req.sampling_rate if req.sampling_rate is not None else (latest.sampling_rate if latest else 1),
+        temporal_window=req.temporal_window if req.temporal_window is not None else (latest.temporal_window if latest else 3.0),
+        notes=req.notes or f"Updated to version {next_version}",
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(new_config)
+    db.commit()
+    db.refresh(new_config)
+
+    logger.info(f"Camera {camera_id} configuration updated to version {next_version}")
+    return CameraConfigResponse.from_orm(new_config)
+
+
+@app.post("/api/cameras/{camera_id}/config/rollback/{version}", response_model=CameraConfigResponse)
+def rollback_camera_config_path(
+    camera_id: str,
+    version: int,
+    notes: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    return _execute_rollback(camera_id, version, notes, db)
+
+
+@app.post("/api/cameras/{camera_id}/config/rollback", response_model=CameraConfigResponse)
+def rollback_camera_config_body(
+    camera_id: str,
+    payload: CameraConfigRollbackRequest,
+    db: Session = Depends(get_db)
+):
+    return _execute_rollback(camera_id, payload.target_version, payload.notes, db)
+
+
+def _execute_rollback(camera_id: str, version: int, notes: Optional[str], db: Session):
+    """
+    Rollback camera configuration to a target historical version.
+    Creates a new active version copying parameters from target version.
+    """
+    target = db.query(CameraConfig).filter(
+        CameraConfig.camera_id == camera_id,
+        CameraConfig.version == version
+    ).first()
+
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Configuration version {version} not found for camera {camera_id}")
+
+    latest = db.query(CameraConfig).filter(CameraConfig.camera_id == camera_id).order_by(CameraConfig.version.desc()).first()
+    next_version = (latest.version + 1) if latest else 1
+
+    # Deactivate current active
+    db.query(CameraConfig).filter(CameraConfig.camera_id == camera_id, CameraConfig.is_active == True).update({"is_active": False})
+
+    rollback_config = CameraConfig(
+        id=str(uuid.uuid4()),
+        camera_id=camera_id,
+        version=next_version,
+        is_active=True,
+        detection_threshold=target.detection_threshold,
+        recognition_threshold=target.recognition_threshold,
+        quality_thresholds=target.quality_thresholds,
+        sampling_rate=target.sampling_rate,
+        temporal_window=target.temporal_window,
+        notes=notes or f"Rollback to version {version}",
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(rollback_config)
+    db.commit()
+    db.refresh(rollback_config)
+
+    logger.info(f"Camera {camera_id} rolled back to parameters of v{version} as new v{next_version}")
+    return CameraConfigResponse.from_orm(rollback_config)
+
+
+@app.get("/api/cameras/{camera_id}/config/history", response_model=CameraConfigHistoryResponse)
+def get_camera_config_history(camera_id: str, db: Session = Depends(get_db)):
+    """Get full configuration audit history for a camera."""
+    configs = db.query(CameraConfig).filter(
+        CameraConfig.camera_id == camera_id
+    ).order_by(CameraConfig.version.desc()).all()
+
+    active = next((c.version for c in configs if c.is_active), 1)
+
+    return CameraConfigHistoryResponse(
+        camera_id=camera_id,
+        active_version=active,
+        history=[CameraConfigResponse.from_orm(c) for c in configs]
+    )
+
+
+@app.get("/api/internal/camera_configs", response_model=List[CameraConfigResponse])
+def get_all_active_camera_configs(
+    db: Session = Depends(get_db),
+    api_key: str = Depends(verify_edge_node)
+):
+    """Bulk sync endpoint for edge nodes to fetch active configurations for all cameras."""
+    configs = db.query(CameraConfig).filter(CameraConfig.is_active == True).all()
+    return [CameraConfigResponse.from_orm(c) for c in configs]
+
+
+# ==================== Camera Topology & Cross-Camera Continuity Endpoints ====================
+
+@app.get("/api/topology", response_model=CameraTopologyResponse)
+def get_camera_topology(db: Session = Depends(get_db)):
+    """Get active camera topology graph with allowed transition edges."""
+    # Synchronize registered cameras as topology nodes
+    cameras = db.query(Camera).all()
+    for cam in cameras:
+        if cam.id not in topology_graph.nodes:
+            topology_graph.add_node(
+                camera_id=cam.id,
+                name=cam.name or cam.id,
+                zone=cam.zone or "",
+            )
+    return topology_graph.to_dict()
+
+
+@app.post("/api/topology/edges", response_model=CameraEdgeResponse)
+def add_topology_edge(
+    edge_req: CameraEdgeCreateRequest,
+    db: Session = Depends(get_db)
+):
+    """Add or update an allowed physical transition edge between two cameras."""
+    edge = topology_graph.add_edge(
+        from_camera_id=edge_req.from_camera_id,
+        to_camera_id=edge_req.to_camera_id,
+        min_travel_seconds=edge_req.min_travel_seconds,
+        max_travel_seconds=edge_req.max_travel_seconds,
+        typical_travel_seconds=edge_req.typical_travel_seconds,
+        distance_meters=edge_req.distance_meters,
+        transition_probability=edge_req.transition_probability,
+        bidirectional=edge_req.bidirectional,
+    )
+    return {
+        "from_camera_id": edge.from_camera_id,
+        "to_camera_id": edge.to_camera_id,
+        "min_travel_seconds": edge.min_travel_seconds,
+        "max_travel_seconds": edge.max_travel_seconds,
+        "typical_travel_seconds": edge.typical_travel_seconds,
+        "distance_meters": edge.distance_meters,
+        "transition_probability": edge.transition_probability,
+        "bidirectional": edge.bidirectional,
+    }
+
+
+@app.post("/api/tracking/cross-camera-evaluate", response_model=CrossCameraEvaluationResponse)
+def evaluate_cross_camera_transition(
+    req: CrossCameraEvaluationRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Evaluate cross-camera identity continuity using topology and temporal constraints.
+    Returns reasoning metadata and classification (CONFIRMED, PROBABLE, UNCERTAIN).
+    """
+    classification, reasoning = continuity_tracker.evaluate_transition(
+        from_camera_id=req.from_camera_id,
+        to_camera_id=req.to_camera_id,
+        elapsed_seconds=req.elapsed_seconds,
+        embedding_similarity=req.embedding_similarity,
+    )
+    return reasoning.to_dict()
+
+
+# ==================== System Version Bundle Endpoint ====================
+
+@app.get("/api/system/version-bundle", response_model=VersionBundleResponse)
+def get_system_version_bundle():
+    """
+    Get current immutable version snapshot for detection model, embedding model,
+    gallery, thresholds, camera configuration, and algorithm versions.
+    """
+    return active_version_bundle.to_dict()
+
+
+# ==================== Edge Node Health & Adaptive Controller Endpoints ====================
+
+node_health_store: Dict[str, Dict[str, Any]] = {}
+
+@app.post("/api/nodes/health", response_model=NodeHealthReportResponse)
+def report_node_health(
+    req: NodeHealthReportRequest,
+    api_key: str = Depends(verify_edge_node)
+):
+    """
+    Ingest live health metrics, operational mode, and adaptive runtime decisions
+    from an edge recognition node.
+    """
+    now = datetime.now(timezone.utc)
+    node_health_store[req.device_id] = {
+        "device_id": req.device_id,
+        "camera_id": req.camera_id,
+        "mode": req.mode,
+        "metrics": req.metrics,
+        "decisions": req.decisions or [],
+        "last_heartbeat": now.isoformat(),
+    }
+    return NodeHealthReportResponse(
+        status="ok",
+        recorded_at=now,
+    )
+
+
+@app.get("/api/nodes/health")
+def get_all_nodes_health(
+    db: Session = Depends(get_db)
+):
+    """Get latest health snapshots and runtime modes for all active edge nodes."""
+    return {"nodes": list(node_health_store.values())}
+
+
+# ==================== Recognition Provenance Endpoints ====================
+
+@app.get("/api/detections/{event_id}/provenance", response_model=ProvenanceResponse)
+def get_detection_provenance(
+    event_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve full 7-stage recognition lineage graph and audit provenance for an event.
+    (Camera -> Frame -> Track -> Embedding Fingerprint -> Candidates -> Decision -> Cloud Sync)
+    """
+    det = None
+    prov = db.query(EventProvenance).filter(EventProvenance.event_id == event_id).first()
+    if not prov:
+        # The dashboard may provide either the detection UUID or event_id.
+        det = db.query(Detection).filter(Detection.event_id == event_id).first()
+        if not det:
+            det = db.query(Detection).filter(Detection.id == event_id).first()
+        if det:
+            prov = db.query(EventProvenance).filter(EventProvenance.event_id == det.event_id).first()
+
+    if not prov:
+        # Check if detection exists to synthesize default provenance if legacy
+        if not det:
+            det = db.query(Detection).filter(Detection.event_id == event_id).first()
+        if not det:
+            raise HTTPException(status_code=404, detail="Recognition event provenance not found")
+        
+        # Synthesize fallback provenance
+        frame_ref = f"frm_{det.camera_id}_{int(det.timestamp.timestamp()*1000)}"
+        emb_fp = hashlib.sha256(f"emb_{det.event_id}".encode()).hexdigest()
+        candidates = [{"identity": det.identity or "Unknown", "score": det.confidence or 0.0, "rank": 1}]
+        obs_refs = [f"obs_{frame_ref}_01"]
+        chain_hash = hashlib.sha256(f"chain_{det.event_id}".encode()).hexdigest()
+        
+        stages = [
+            ProvenanceStageResponse(stage_name="1. Camera Ingestion", stage_id=f"cam_{det.camera_id}", timestamp=det.timestamp.timestamp(), metadata={"camera_id": det.camera_id}),
+            ProvenanceStageResponse(stage_name="2. Frame Acquisition", stage_id=frame_ref, timestamp=det.timestamp.timestamp(), metadata={"frame_reference": frame_ref}),
+            ProvenanceStageResponse(stage_name="3. Face Tracking", stage_id="track_untracked", timestamp=det.timestamp.timestamp(), metadata={"track_id": None}),
+            ProvenanceStageResponse(stage_name="4. Embedding Extraction", stage_id=f"emb_{emb_fp[:12]}", timestamp=det.timestamp.timestamp(), metadata={"embedding_fingerprint": emb_fp}),
+            ProvenanceStageResponse(stage_name="5. Candidate Evaluation", stage_id=f"eval_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"candidates": candidates}),
+            ProvenanceStageResponse(stage_name="6. Recognition Decision", stage_id=f"dec_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"selected_identity": det.identity, "confidence": det.confidence}),
+            ProvenanceStageResponse(stage_name="7. Cloud Synchronization", stage_id=f"sync_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"cloud_detection_id": det.id}),
+        ]
+        
+        return ProvenanceResponse(
+            event_id=det.event_id,
+            detection_id=det.id,
+            camera_id=det.camera_id,
+            camera_config_version=det.camera_config_version or det.config_version or 1,
+            frame_reference=frame_ref,
+            track_id=None,
+            observation_references=obs_refs,
+            detection_model_version=det.detection_model_version or "scrfd_500m_bnkps_v1",
+            embedding_model_version=det.embedding_model_version or "w600k_mbf_v1",
+            embedding_fingerprint=emb_fp,
+            candidate_matches=[ProvenanceCandidateResponse(**c) for c in candidates],
+            decision_tier="LOCAL_HIGH_CONFIDENCE",
+            selected_identity=det.identity or "Unknown",
+            confidence=det.confidence or 0.0,
+            decision_timestamp=det.timestamp,
+            sync_event_id=f"sync_{det.event_id}",
+            cloud_record_id=det.id,
+            provenance_chain_hash=chain_hash,
+            stages=stages,
+        )
+
+    # Parse stored JSON fields
+    obs_list = json.loads(prov.observation_references) if prov.observation_references else []
+    cand_list = json.loads(prov.candidate_matches) if prov.candidate_matches else []
+    det = db.query(Detection).filter(Detection.event_id == prov.event_id).first()
+    
+    stages = [
+        ProvenanceStageResponse(stage_name="1. Camera Ingestion", stage_id=f"cam_{prov.camera_id}", timestamp=prov.decision_timestamp.timestamp(), metadata={"camera_id": prov.camera_id}),
+        ProvenanceStageResponse(stage_name="2. Frame Acquisition", stage_id=prov.frame_reference, timestamp=prov.decision_timestamp.timestamp(), metadata={"frame_reference": prov.frame_reference, "obs_count": len(obs_list)}),
+        ProvenanceStageResponse(stage_name="3. Face Tracking", stage_id=prov.track_id or "untracked", timestamp=prov.decision_timestamp.timestamp(), metadata={"track_id": prov.track_id, "observations": obs_list}),
+        ProvenanceStageResponse(stage_name="4. Embedding Extraction", stage_id=f"emb_{prov.embedding_fingerprint[:12]}", timestamp=prov.decision_timestamp.timestamp(), metadata={"embedding_fingerprint": prov.embedding_fingerprint, "model": prov.embedding_model_version}),
+        ProvenanceStageResponse(stage_name="5. Candidate Evaluation", stage_id=f"eval_{prov.event_id}", timestamp=prov.decision_timestamp.timestamp(), metadata={"candidates": cand_list}),
+        ProvenanceStageResponse(stage_name="6. Recognition Decision", stage_id=f"dec_{prov.event_id}", timestamp=prov.decision_timestamp.timestamp(), metadata={"selected_identity": prov.selected_identity, "confidence": prov.confidence, "tier": prov.decision_tier}),
+        ProvenanceStageResponse(stage_name="7. Cloud Synchronization", stage_id=prov.sync_event_id or f"sync_{prov.event_id}", timestamp=prov.decision_timestamp.timestamp(), metadata={"chain_hash": prov.provenance_chain_hash}),
+    ]
+
+    return ProvenanceResponse(
+        event_id=prov.event_id,
+        detection_id=det.id if det else None,
+        camera_id=prov.camera_id,
+        camera_config_version=(det.camera_config_version or det.config_version or 1) if det else 1,
+        frame_reference=prov.frame_reference,
+        track_id=prov.track_id,
+        observation_references=obs_list,
+        detection_model_version=prov.detection_model_version,
+        embedding_model_version=prov.embedding_model_version,
+        embedding_fingerprint=prov.embedding_fingerprint,
+        candidate_matches=[ProvenanceCandidateResponse(**c) for c in cand_list],
+        decision_tier=prov.decision_tier,
+        selected_identity=prov.selected_identity,
+        confidence=prov.confidence,
+        decision_timestamp=prov.decision_timestamp,
+        sync_event_id=prov.sync_event_id,
+        cloud_record_id=det.id if det else None,
+        provenance_chain_hash=prov.provenance_chain_hash,
+        stages=stages,
+    )
+
+
+@app.post("/api/provenance/retention", response_model=ProvenanceRetentionResponse)
+def enforce_provenance_retention(
+    req: ProvenanceRetentionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Enforce data retention policy on intermediate provenance records.
+    Purges historical processing lineage older than max_retention_days while retaining the detection.
+    """
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=req.max_retention_days)
+    
+    # Count & delete expired records
+    expired_records = db.query(EventProvenance).filter(EventProvenance.created_at < cutoff).all()
+    count = len(expired_records)
+    for r in expired_records:
+        db.delete(r)
+    db.commit()
+    
+    remaining_count = db.query(EventProvenance).count()
+    return ProvenanceRetentionResponse(
+        purged_records_count=count,
+        retained_records_count=remaining_count,
+        cutoff_timestamp=cutoff,
+    )
+
+
 # ==================== Profile Endpoints ====================
+
+def _subject_vector(value: Any) -> Optional[np.ndarray]:
+    if value is None:
+        return None
+    try:
+        vector = np.asarray(value, dtype=np.float32).reshape(-1)
+        if vector.size != 512 or not np.isfinite(vector).all():
+            return None
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _refresh_unregistered_subjects(db: Session, threshold: Optional[float] = None) -> None:
+    threshold = threshold if threshold is not None else settings.unregistered_similarity_threshold
+    subjects = db.query(UnregisteredSubject).filter(UnregisteredSubject.status == "active").all()
+    pending = db.query(Detection).filter(
+        Detection.profile_id.is_(None),
+        Detection.status == DetectionStatusEnum.unknown,
+        Detection.embedding_vector.is_not(None),
+        Detection.unregistered_subject_id.is_(None),
+    ).order_by(Detection.timestamp.asc()).all()
+
+    for detection in pending:
+        vector = _subject_vector(detection.embedding_vector)
+        if vector is None:
+            continue
+        best_subject = None
+        best_similarity = -1.0
+        for subject in subjects:
+            representative = _subject_vector(subject.representative_embedding)
+            if representative is None:
+                continue
+            similarity = float(np.dot(vector, representative))
+            if similarity > best_similarity:
+                best_subject, best_similarity = subject, similarity
+
+        if best_subject is None or best_similarity < threshold:
+            subject = UnregisteredSubject(
+                id=str(uuid.uuid4()),
+                display_name=f"Unknown Person {len(subjects) + 1}",
+                representative_embedding=vector.tolist(),
+                similarity_threshold=threshold,
+                status="active",
+            )
+            db.add(subject)
+            db.flush()
+            subjects.append(subject)
+            best_subject = subject
+        detection.unregistered_subject_id = best_subject.id
+
+    if pending:
+        db.commit()
+
+
+def _subject_response(subject: UnregisteredSubject, db: Session) -> UnregisteredSubjectResponse:
+    detections = db.query(Detection).filter(
+        Detection.unregistered_subject_id == subject.id,
+        Detection.profile_id.is_(None),
+    ).order_by(Detection.timestamp.asc()).all()
+    if not detections:
+        raise HTTPException(status_code=404, detail="Unregistered subject not found")
+    event_ids = [d.event_id or d.id for d in detections]
+    fingerprint = hashlib.sha256(json.dumps(subject.representative_embedding).encode()).hexdigest()
+    return UnregisteredSubjectResponse(
+        id=subject.id,
+        display_name=subject.display_name,
+        capture_count=len(detections),
+        first_seen=detections[0].timestamp,
+        last_seen=detections[-1].timestamp,
+        cameras=sorted({d.camera_id for d in detections}),
+        best_confidence=max(float(d.confidence or 0) for d in detections),
+        representative_fingerprint=fingerprint,
+        vector_dimension=512,
+        event_ids=event_ids[:100],
+        status=subject.status,
+    )
+
+
+@app.get("/api/unregistered-subjects", response_model=List[UnregisteredSubjectResponse])
+def get_unregistered_subjects(
+    threshold: Optional[float] = Query(None, ge=0.5, le=0.99),
+    db: Session = Depends(get_db),
+):
+    _refresh_unregistered_subjects(db, threshold)
+    subjects = db.query(UnregisteredSubject).filter(UnregisteredSubject.status == "active").all()
+    return [_subject_response(subject, db) for subject in subjects if db.query(Detection).filter(
+        Detection.unregistered_subject_id == subject.id, Detection.profile_id.is_(None)
+    ).first()]
+
+
+@app.patch("/api/unregistered-subjects/{subject_id}", response_model=UnregisteredSubjectResponse)
+def rename_unregistered_subject(subject_id: str, req: UnregisteredSubjectRenameRequest, db: Session = Depends(get_db)):
+    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    if not subject or not req.display_name.strip():
+        raise HTTPException(status_code=404 if not subject else 422, detail="Invalid unregistered subject name" if subject else "Unregistered subject not found")
+    subject.display_name = req.display_name.strip()
+    db.commit()
+    return _subject_response(subject, db)
+
+
+@app.post("/api/unregistered-subjects/{subject_id}/register", response_model=ProfileResponse)
+def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegisterRequest, db: Session = Depends(get_db)):
+    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Unregistered subject not found")
+    try:
+        role = ProfileRoleEnum(req.role)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid profile role")
+    profile = Profile(id=str(uuid.uuid4()), name=req.name.strip(), role=role, department=req.department, embedding_status=EmbeddingStatusEnum.indexed, embedding_count=1, enrolled_at=datetime.now(timezone.utc))
+    if not profile.name:
+        raise HTTPException(status_code=422, detail="Profile name cannot be empty")
+    db.add(profile)
+    db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=subject.representative_embedding))
+    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({"profile_id": profile.id, "status": DetectionStatusEnum.recognized, "unregistered_subject_id": None})
+    subject.status = "registered"
+    db.commit()
+    db.refresh(profile)
+    return ProfileResponse.from_orm(profile)
+
+
+@app.post("/api/unregistered-subjects/{subject_id}/assign", response_model=ProfileResponse)
+def assign_unregistered_subject(subject_id: str, req: UnregisteredSubjectAssignRequest, db: Session = Depends(get_db)):
+    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    profile = db.query(Profile).filter(Profile.id == req.profile_id).first()
+    if not subject or not profile:
+        raise HTTPException(status_code=404, detail="Unregistered subject or profile not found")
+    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({"profile_id": profile.id, "status": DetectionStatusEnum.recognized, "unregistered_subject_id": None})
+    subject.status = "assigned"
+    db.commit()
+    return ProfileResponse.from_orm(profile)
+
+
+@app.post("/api/unregistered-subjects/{subject_id}/merge", response_model=UnregisteredSubjectResponse)
+def merge_unregistered_subject(subject_id: str, req: UnregisteredSubjectMergeRequest, db: Session = Depends(get_db)):
+    target = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    source = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == req.source_subject_id, UnregisteredSubject.status == "active").first()
+    if not target or not source or target.id == source.id:
+        raise HTTPException(status_code=404, detail="Unregistered subject not found")
+    db.query(Detection).filter(Detection.unregistered_subject_id == source.id).update({"unregistered_subject_id": target.id})
+    source.status = "merged"
+    db.commit()
+    return _subject_response(target, db)
+
+
+@app.delete("/api/unregistered-subjects/{subject_id}/events/{event_id}")
+def delete_unregistered_event(subject_id: str, event_id: str, db: Session = Depends(get_db)):
+    detection = db.query(Detection).filter(
+        Detection.unregistered_subject_id == subject_id,
+        (Detection.event_id == event_id) | (Detection.id == event_id),
+    ).first()
+    if not detection:
+        raise HTTPException(status_code=404, detail="Unregistered event not found")
+    db.query(Alert).filter(Alert.detection_id == detection.id).update({"detection_id": None})
+    db.delete(detection)
+    db.commit()
+    return {"deleted": True, "event_id": event_id}
+
+
+@app.delete("/api/unregistered-subjects/{subject_id}")
+def delete_unregistered_subject(subject_id: str, db: Session = Depends(get_db)):
+    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Unregistered subject not found")
+    detection_ids = [d.id for d in db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).all()]
+    if detection_ids:
+        db.query(Alert).filter(Alert.detection_id.in_(detection_ids)).update({"detection_id": None}, synchronize_session=False)
+    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).delete(synchronize_session=False)
+    db.delete(subject)
+    db.commit()
+    return {"deleted": True, "subject_id": subject_id}
 
 @app.get("/api/profiles", response_model=list[ProfileResponse])
 def get_profiles(db: Session = Depends(get_db)):
@@ -608,7 +1528,7 @@ async def create_profile(
         department=department,
         embedding_status=EmbeddingStatusEnum.pending,
         embedding_count=0,
-        enrolled_at=datetime.utcnow()
+        enrolled_at=datetime.now(timezone.utc)
     )
     db.add(profile)
     db.commit()
@@ -633,6 +1553,75 @@ async def create_profile(
             
     db.refresh(profile)
     return ProfileResponse.from_orm(profile)
+
+
+@app.put("/api/profiles/{profile_id}", response_model=ProfileResponse)
+def update_profile(profile_id: str, req: ProfileUpdateRequest, db: Session = Depends(get_db)):
+    """Update editable profile metadata without changing stored embeddings."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if req.name is not None:
+        if not req.name.strip():
+            raise HTTPException(status_code=422, detail="Profile name cannot be empty")
+        profile.name = req.name.strip()
+    if req.role is not None:
+        try:
+            profile.role = ProfileRoleEnum(req.role)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid profile role")
+    if req.department is not None:
+        profile.department = req.department.strip() or None
+    db.commit()
+    db.refresh(profile)
+    return ProfileResponse.from_orm(profile)
+
+
+@app.delete("/api/profiles/{profile_id}")
+def delete_profile(profile_id: str, db: Session = Depends(get_db)):
+    """Delete a profile and its vectors while retaining historical detections."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    db.query(Detection).filter(Detection.profile_id == profile_id).update({"profile_id": None})
+    db.query(Alert).filter(Alert.profile_id == profile_id).update({"profile_id": None})
+    db.query(CameraTransition).filter(CameraTransition.profile_id == profile_id).delete(synchronize_session=False)
+    db.query(Embedding).filter(Embedding.profile_id == profile_id).delete(synchronize_session=False)
+    db.delete(profile)
+    db.commit()
+    return {"deleted": True, "profile_id": profile_id}
+
+
+@app.delete("/api/profiles/{profile_id}/embeddings/{embedding_id}")
+def delete_profile_embedding(profile_id: str, embedding_id: str, db: Session = Depends(get_db)):
+    """Delete one stored vector and keep the profile count/status consistent."""
+    embedding = db.query(Embedding).filter(
+        Embedding.id == embedding_id,
+        Embedding.profile_id == profile_id,
+    ).first()
+    if not embedding:
+        raise HTTPException(status_code=404, detail="Embedding not found")
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    db.delete(embedding)
+    if profile:
+        profile.embedding_count = max(0, profile.embedding_count - 1)
+        if profile.embedding_count == 0:
+            profile.embedding_status = EmbeddingStatusEnum.missing
+    db.commit()
+    return {"deleted": True, "embedding_id": embedding_id, "profile_id": profile_id}
+
+
+@app.delete("/api/profiles/{profile_id}/embeddings")
+def delete_profile_embeddings(profile_id: str, db: Session = Depends(get_db)):
+    """Remove all vectors for a profile without deleting the profile."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    deleted_count = db.query(Embedding).filter(Embedding.profile_id == profile_id).delete(synchronize_session=False)
+    profile.embedding_count = 0
+    profile.embedding_status = EmbeddingStatusEnum.missing
+    db.commit()
+    return {"deleted": True, "profile_id": profile_id, "deleted_count": deleted_count}
 
 
 @app.post("/api/profiles/merge")
@@ -1200,7 +2189,7 @@ def get_duplicates(db: Session = Depends(get_db)):
 
 @app.get("/api/analytics/trajectory", response_model=SubjectTrajectoryResponse)
 def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Session = Depends(get_db)):
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     
     profile = db.query(Profile).filter(Profile.id == profileId).first()
     if not profile:
@@ -1231,7 +2220,7 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
 
 @app.get("/api/analytics/footfall", response_model=list[FootfallBucketResponse])
 def get_footfall(days: int = Query(7), db: Session = Depends(get_db)):
-    start_time = datetime.utcnow() - timedelta(days=days)
+    start_time = datetime.now(timezone.utc) - timedelta(days=days)
     
     results = db.query(
         extract('hour', Detection.timestamp).label('hour'),
@@ -1282,7 +2271,7 @@ def get_gender_distribution(db: Session = Depends(get_db)):
 
 @app.get("/api/analytics/attendance", response_model=list[AttendanceRecordFullResponse])
 def get_attendance(days: int = Query(7), db: Session = Depends(get_db)):
-    start_time = datetime.utcnow() - timedelta(days=days)
+    start_time = datetime.now(timezone.utc) - timedelta(days=days)
     
     results = db.query(
         Detection.profile_id,

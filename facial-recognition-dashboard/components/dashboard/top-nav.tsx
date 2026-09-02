@@ -1,7 +1,5 @@
-'use client'
-
 import { useQuery } from '@tanstack/react-query'
-import { fetchKpis } from '@/lib/api'
+import { fetchKpis, fetchVersionBundle } from '@/lib/api'
 import { formatNumber, healthLabel } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -9,8 +7,79 @@ import {
   ScanFace,
   ShieldAlert,
   Activity,
+  Layers,
+  CheckCircle2,
 } from 'lucide-react'
 import type { SystemHealth } from '@/lib/types'
+
+function VersionBundleBadge() {
+  const { data: bundle, isLoading, isError } = useQuery({
+    queryKey: ['version-bundle'],
+    queryFn: () => fetchVersionBundle(),
+    staleTime: 60000,
+  })
+
+  if (isLoading) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground animate-pulse">
+        <Layers className="size-3" />
+        <span>hash: ...</span>
+      </span>
+    )
+  }
+
+  if (isError || !bundle) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="Version metadata currently offline">
+        <Layers className="size-3 opacity-60" />
+        <span>v2.4</span>
+      </span>
+    )
+  }
+
+  const shortHash = bundle.versionBundleHash ? bundle.versionBundleHash.slice(0, 8) : 'v2.4'
+
+  return (
+    <div className="group relative inline-block">
+      <span className="inline-flex cursor-help items-center gap-1.5 rounded-md border border-border/80 bg-muted/70 px-2 py-0.5 font-mono text-[11px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-muted">
+        <Layers className="size-3 text-primary" />
+        <span className="tracking-tight">{shortHash}</span>
+        {bundle.isProductionReady && (
+          <CheckCircle2 className="size-3 text-success" />
+        )}
+      </span>
+
+      {/* Hover popover tooltip */}
+      <div className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-64 rounded-lg border border-border bg-popover/95 p-3 shadow-xl backdrop-blur-md group-hover:block">
+        <p className="text-xs font-semibold text-foreground">AI Model Version Bundle</p>
+        <div className="mt-2 space-y-1 font-mono text-[10px] text-muted-foreground">
+          <div className="flex justify-between">
+            <span>Detection:</span>
+            <span className="text-foreground">{bundle.detectionModelVersion}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Embedding:</span>
+            <span className="text-foreground">{bundle.embeddingModelVersion}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Gallery / Thresh:</span>
+            <span className="text-foreground">v{bundle.galleryVersion} / v{bundle.thresholdVersion}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Algorithm:</span>
+            <span className="text-foreground">{bundle.algorithmVersion}</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between border-t border-border/60 pt-1">
+            <span>Full Hash:</span>
+            <span className="truncate max-w-[120px] text-primary" title={bundle.versionBundleHash}>
+              {bundle.versionBundleHash}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function HealthDot({ health }: { health: SystemHealth }) {
   const styles: Record<SystemHealth, string> = {
@@ -95,12 +164,10 @@ export function TopNav() {
             <ScanFace className="size-5" />
           </span>
           <div className="leading-tight">
-            <p className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-              SENTINEL
-              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">
-                FR-OPS v2.4
-              </span>
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold tracking-tight">SENTINEL</p>
+              <VersionBundleBadge />
+            </div>
             <p className="text-[11px] text-muted-foreground">
               Facial Recognition Operations Console
             </p>

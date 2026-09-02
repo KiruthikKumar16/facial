@@ -86,6 +86,9 @@ class CpuCameraPipeline:
         capture_height: int = 480,
         lock_resolution: bool = False,
         model_name: str = 'buffalo_s',
+        quality_assessor: Any = None,
+        track_fusion_cfg: Optional[Dict[str, Any]] = None,
+        camera_config_manager: Any = None,
     ) -> None:
         self.camera_id = camera_id
         self.source = source
@@ -97,6 +100,35 @@ class CpuCameraPipeline:
         self.frame_skip = max(1, int(frame_skip))
         self.recognition_interval = float(recognition_interval)
         self.use_tracker = bool(use_tracker)
+        self.quality_assessor = quality_assessor
+        self.camera_config_manager = camera_config_manager
+        from track_fusion import TemporalTrackManager
+        
+        # Apply camera-specific profile if available
+        profile = None
+        if self.camera_config_manager:
+            profile = self.camera_config_manager.get_profile(self.camera_id)
+            if profile:
+                self.recognizer.threshold = profile.recognition_threshold
+                if profile.sampling_rate > 1:
+                    self.frame_skip = profile.sampling_rate
+
+        # Temporal Track Fusion Manager
+        track_cfg = track_fusion_cfg or {}
+        temporal_win = profile.temporal_window if profile else float(track_cfg.get('max_observation_window_seconds', 3.0))
+        sim_thresh = profile.recognition_threshold if profile else float(track_cfg.get('finalization_similarity_threshold', self.recognizer.threshold))
+
+        self.track_manager = TemporalTrackManager(
+            max_observation_window_seconds=temporal_win,
+            max_observations_per_track=int(track_cfg.get('max_observations_per_track', 30)),
+            min_observations_to_finalize=int(track_cfg.get('min_observations_to_finalize', 3)),
+            similarity_threshold=sim_thresh,
+            finalization_margin=float(track_cfg.get('finalization_margin', 0.05)),
+            max_missed_frames=int(track_cfg.get('max_missed_frames', 15)),
+            quality_weight_gamma=float(track_cfg.get('quality_weight_gamma', 2.0)),
+            temporal_decay_lambda=float(track_cfg.get('temporal_decay_lambda', 0.1)),
+            max_active_tracks=int(track_cfg.get('max_active_tracks', 50)),
+        )
         self._frame_count = 0
         self._processed_count = 0
         self.latest_frame: Optional[Any] = None
@@ -295,7 +327,9 @@ class CpuCameraPipeline:
             x_scale = fw / sw
             y_scale = fh / sh
             
-            new_detections = []
+            frame_observations = []
+            from track_fusion import FaceObservation
+            
             for face in detections:
                 l, t, r, b = face['bbox']
                 l, r = int(l * x_scale), int(r * x_scale)
@@ -308,49 +342,73 @@ class CpuCameraPipeline:
                     kps[:, 1] *= y_scale
                     face['kps'] = kps
                 
-                matched_old = None
-                best_iou = 0.3
-                for old_det in self.last_detections:
-                    iou = self._compute_iou(face['bbox'], old_det['bbox'])
-                    if iou > best_iou:
-                        best_iou = iou
-                        matched_old = old_det
-                
-                run_rec = False
-                if matched_old is None:
-                    run_rec = True
-                else:
-                    if now - matched_old.get('last_rec_time', 0) > self.recognition_interval:
-                        run_rec = True
-                
-                label, score = "Unknown", 0.0
-                if matched_old:
-                    label = matched_old['label']
-                    score = matched_old['score']
-                
-                if run_rec:
+                quality_category = "HIGH"
+                quality_score = 100.0
+                dt = max(0.001, now - (self.last_fps_time or now))
+
+                if self.quality_assessor:
+                    cat, q_metrics = self.quality_assessor.assess(frame, face, dt=dt)
+                    quality_category = cat
+                    quality_score = q_metrics.get('score', 100.0)
+
+                emb = None
+                if quality_category != "POOR":
                     emb = self.detector.extract_embedding(frame, face)
-                    if emb is not None:
-                        label, score_val = self.recognizer.recognize(emb)
-                        score = float(score_val)
-                        if label == 'Unknown' and self.pending_saver is not None:
-                            try:
-                                cropped = frame[max(0,t):min(fh,b), max(0,l):min(fw,r)].copy()
-                                pending_label = self.pending_saver.save(emb, cropped)
-                                if pending_label is not None:
-                                    label = pending_label
-                            except Exception:
-                                pass
-                
+
+                obs = FaceObservation(
+                    timestamp=now,
+                    bbox=[l, t, r, b],
+                    quality_score=quality_score,
+                    quality_category=quality_category,
+                    confidence=float(face.get('det_score', 1.0)),
+                    embedding=emb,
+                )
+                frame_observations.append(obs)
+
+            track_pairs = self.track_manager.process_frame_observations(
+                frame_observations,
+                self.recognizer.labels,
+                self.recognizer.embeddings,
+                current_time=now,
+            )
+
+            new_detections = []
+            for track, obs in track_pairs:
+                full_bbox = obs.bbox
+                track_id = track.track_id
+                fused_id = track.fused_identity
+                fused_conf = track.fused_confidence
+                is_finalized = track.is_finalized
+
+                if is_finalized:
+                    label = f"[{track_id}] {fused_id}*"
+                    if self.logger is not None:
+                        cfg_ver = 1
+                        if self.camera_config_manager:
+                            prof = self.camera_config_manager.get_profile(self.camera_id)
+                            if prof:
+                                cfg_ver = prof.version
+                        self.logger.log_detection(
+                            self.camera_id, 
+                            full_bbox, 
+                            fused_id, 
+                            float(fused_conf), 
+                            quality_score=obs.quality_score,
+                            embedding=obs.embedding,
+                            config_version=cfg_ver,
+                        )
+                elif obs.quality_category == "POOR":
+                    label = f"[{track_id}] Poor Quality ({obs.quality_score:.0f})"
+                else:
+                    label = f"[{track_id}] Assessing {fused_id} ({track.valid_embeddings_count}/{self.track_manager.min_obs})"
+
                 new_detections.append({
-                    'bbox': (l, t, r, b),
+                    'bbox': tuple(full_bbox),
                     'label': label,
-                    'score': score,
-                    'last_rec_time': now if run_rec else (matched_old.get('last_rec_time', 0) if matched_old else now)
+                    'score': fused_conf,
+                    'last_rec_time': now,
+                    'obs_count': track.valid_embeddings_count
                 })
-                
-                if self.logger is not None and run_rec:
-                    self.logger.log_detection(self.camera_id, [l, t, r, b], label, float(score))
 
             self.last_detections = new_detections
             self._init_trackers(frame)
@@ -500,6 +558,9 @@ def main():
 
     rec_interval = int(cfg.get('cpu_recognition_interval', 2))
     pipelines: List[CpuCameraPipeline] = []
+    from quality import FaceQualityAssessor
+    quality_assessor = FaceQualityAssessor(cfg.get('quality_thresholds', {}))
+
     for cam_id, src in build_sources(cfg, options.webcam_index):
         p = CpuCameraPipeline(
             cam_id,
@@ -516,6 +577,8 @@ def main():
             capture_height=cam_h,
             lock_resolution=lock_resolution,
             model_name=detector_model,
+            quality_assessor=quality_assessor,
+            track_fusion_cfg=cfg.get('track_fusion', {}),
         )
         pipelines.append(p)
 

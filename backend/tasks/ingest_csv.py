@@ -8,7 +8,7 @@ Run locally to import historical detection data:
 import argparse
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -126,7 +126,7 @@ def ingest_csv(database_url: str, csv_path: str = None) -> int:
                     'status': status,
                     'confidence': confidence,
                     'bbox': bbox,
-                    'created_at': datetime.utcnow(),
+                    'created_at': datetime.now(timezone.utc),
                 })
                 
                 inserted += 1

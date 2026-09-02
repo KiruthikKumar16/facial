@@ -1,5 +1,7 @@
 import type { DetectionStatus, ProfileRole, SystemHealth } from './types'
 
+const DISPLAY_TIME_ZONE = 'Asia/Kolkata'
+
 /** Tailwind gradient utility per synthetic-snapshot tone. */
 export const toneGradient: Record<string, string> = {
   sky: 'from-sky-500/40 to-sky-900/60',
@@ -16,11 +18,12 @@ export function formatTime(iso: string | undefined | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return '—'
-  return d.toLocaleTimeString('en-US', {
+  return d.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+    timeZone: DISPLAY_TIME_ZONE,
   })
 }
 
@@ -28,10 +31,11 @@ export function formatClock(iso: string | undefined | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return '—'
-  return d.toLocaleTimeString('en-US', {
+  return d.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
+    timeZone: DISPLAY_TIME_ZONE,
   })
 }
 

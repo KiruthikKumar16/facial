@@ -4,6 +4,7 @@ rtsp_urls:
   # Android IP Webcam — H.264 video-only RTSP stream.
   - rtsp://192.168.1.67:8080/h264.sdp
   - rtsp://192.168.1.53:8080/h264.sdp
+  
 
 # Valid next-camera hops for movement tracking. Omitted origins allow any hop.
 camera_routes:
@@ -15,6 +16,37 @@ max_camera_travel_seconds: 300
 
 # Cosine similarity threshold for identity matching
 similarity_threshold: 0.35
+
+# Face Quality Thresholds for Adaptive Recognition
+# High: immediate recognition. Medium: temporal deferral. Poor: ignored.
+quality_thresholds:
+  high:
+    min_size: 80
+    min_confidence: 0.7
+    min_sharpness: 100.0
+    illumination_range: [40, 210]
+    min_pose_score: 0.65
+    min_occlusion_score: 0.60
+  medium:
+    min_size: 40
+    min_confidence: 0.4
+    min_sharpness: 50.0
+    illumination_range: [20, 235]
+    min_pose_score: 0.40
+    min_occlusion_score: 0.35
+  temporal_observations_required: 5
+
+# Temporal Face-Track Identity Fusion Settings
+track_fusion:
+  max_observation_window_seconds: 3.0
+  max_observations_per_track: 30
+  min_observations_to_finalize: 3
+  finalization_similarity_threshold: 0.35
+  finalization_margin: 0.05
+  max_missed_frames: 15
+  quality_weight_gamma: 2.0
+  temporal_decay_lambda: 0.1
+  max_active_tracks: 50
 
 # Use GPU backend when available. Install onnxruntime-gpu separately for GPU support.
 use_gpu: false

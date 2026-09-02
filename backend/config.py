@@ -80,6 +80,15 @@ def _parse_bool(v: str, default: bool = False) -> bool:
 def _parse_int(v: str, default: int) -> int:
     if not v:
         return default
+
+
+def _parse_float(v: str, default: float) -> float:
+    if not v:
+        return default
+    try:
+        return float(v)
+    except Exception:
+        return default
     try:
         return int(v)
     except Exception:
@@ -140,6 +149,10 @@ class _Settings:
     @property
     def enable_edge_pipelines(self) -> bool:
         return _parse_bool(_get("ENABLE_EDGE_PIPELINES", "False"), False)
+
+    @property
+    def unregistered_similarity_threshold(self) -> float:
+        return min(0.99, max(0.50, _parse_float(_get("UNREGISTERED_SIMILARITY_THRESHOLD", "0.75"), 0.75)))
 
 
 settings = _Settings()

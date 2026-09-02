@@ -12,3 +12,4 @@ opencv-python-headless==4.10.0.84
 numpy==1.26.4
 onnxruntime==1.19.2
 insightface==0.7.3
+alembic>=1.13.0

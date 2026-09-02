@@ -94,6 +94,9 @@ class CameraPipeline:
         capture_height: int = MAX_CAMERA_HEIGHT,
         reconnect_interval: int = 10,
         model_name: str = MAX_MODEL,
+        quality_assessor: Any = None,
+        track_fusion_cfg: Optional[Dict[str, Any]] = None,
+        camera_config_manager: Any = None,
     ) -> None:
         self.camera_id = camera_id
         self.source = source
@@ -101,6 +104,8 @@ class CameraPipeline:
         self.recognizer = recognizer
         self.logger = logger
         self.pending_saver = pending_saver
+        self.quality_assessor = quality_assessor
+        self.camera_config_manager = camera_config_manager
         self.frame_size = frame_size
         self.capture_width = capture_width
         self.capture_height = capture_height
@@ -109,6 +114,33 @@ class CameraPipeline:
         self.latest_frame_lock = threading.Lock()
         self.last_frame_time = None
         self.fps = 0.0
+        
+        # Temporal Track Fusion Manager
+        from facial_recognition.track_fusion import TemporalTrackManager, FaceObservation
+        track_cfg = track_fusion_cfg or {}
+        
+        # Apply camera-specific profile if available
+        profile = None
+        if self.camera_config_manager:
+            profile = self.camera_config_manager.get_profile(self.camera_id)
+            if profile:
+                self.recognizer.threshold = profile.recognition_threshold
+                
+        temporal_win = profile.temporal_window if profile else float(track_cfg.get('max_observation_window_seconds', 3.0))
+        sim_thresh = profile.recognition_threshold if profile else float(track_cfg.get('finalization_similarity_threshold', self.recognizer.threshold))
+
+        self.track_manager = TemporalTrackManager(
+            max_observation_window_seconds=temporal_win,
+            max_observations_per_track=int(track_cfg.get('max_observations_per_track', 30)),
+            min_observations_to_finalize=int(track_cfg.get('min_observations_to_finalize', 3)),
+            similarity_threshold=sim_thresh,
+            finalization_margin=float(track_cfg.get('finalization_margin', 0.05)),
+            max_missed_frames=int(track_cfg.get('max_missed_frames', 15)),
+            quality_weight_gamma=float(track_cfg.get('quality_weight_gamma', 2.0)),
+            temporal_decay_lambda=float(track_cfg.get('temporal_decay_lambda', 0.1)),
+            max_active_tracks=int(track_cfg.get('max_active_tracks', 50)),
+        )
+
         self.capture = CameraCapture(
             source,
             camera_id,
@@ -128,7 +160,9 @@ class CameraPipeline:
         self.capture.join(timeout=5)
 
     def process_frame(self, camera_id: str, frame: Any) -> None:
+        from facial_recognition.track_fusion import FaceObservation
         now = time.time()
+        dt = max(0.001, now - (self.last_frame_time or now))
         if self.last_frame_time is not None:
             self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(now - self.last_frame_time, 1e-6))
         self.last_frame_time = now
@@ -142,30 +176,131 @@ class CameraPipeline:
         x_scale = fw / sw
         y_scale = fh / sh
 
+        frame_observations: List[FaceObservation] = []
+        scaled_faces: List[Tuple[List[int], Any]] = []
+
         for face in detections:
             l, t, r, b = face['bbox']
             l, r = int(l * x_scale), int(r * x_scale)
             t, b = int(t * y_scale), int(b * y_scale)
             full_bbox = [l, t, r, b]
 
-            emb = self.detector.extract_embedding(frame, {**face, 'bbox': full_bbox})
-            if emb is None:
-                continue
+            # Scale landmarks if present
+            scaled_kps = None
+            if 'kps' in face and face['kps'] is not None:
+                kps = np.array(face['kps'], dtype=np.float32)
+                kps[:, 0] *= x_scale
+                kps[:, 1] *= y_scale
+                scaled_kps = kps
 
-            identity, confidence = self.recognizer.recognize(emb)
-            display_label = identity
-            if identity == 'Unknown' and self.pending_saver is not None:
+            quality_category = "HIGH"
+            quality_score = 100.0
+            
+            if self.quality_assessor:
+                cat, q_metrics = self.quality_assessor.assess(
+                    frame, 
+                    {**face, 'bbox': full_bbox, 'kps': scaled_kps}, 
+                    dt=dt
+                )
+                quality_category = cat
+                quality_score = q_metrics.get('score', 100.0)
+
+            # Avoid generating unnecessary embeddings for unusable/poor quality faces
+            emb = None
+            if quality_category != "POOR":
+                emb = self.detector.extract_embedding(frame, {**face, 'bbox': full_bbox, 'kps': scaled_kps})
+
+            obs = FaceObservation(
+                timestamp=now,
+                bbox=full_bbox,
+                quality_score=quality_score,
+                quality_category=quality_category,
+                confidence=float(face.get('det_score', 1.0)),
+                embedding=emb,
+            )
+            frame_observations.append(obs)
+            scaled_faces.append((full_bbox, emb))
+
+        # Temporal Track Association & Identity Fusion
+        track_pairs = self.track_manager.process_frame_observations(
+            frame_observations,
+            self.recognizer.labels,
+            self.recognizer.embeddings,
+            current_time=now,
+        )
+
+        for track, obs in track_pairs:
+            full_bbox = obs.bbox
+            track_id = track.track_id
+            fused_id = track.fused_identity
+            fused_conf = track.fused_confidence
+            is_finalized = track.is_finalized
+
+            if is_finalized:
+                display_label = f"[{track_id}] {fused_id} ({fused_conf:.2f})*"
+                self._annotate_frame(annotated_frame, full_bbox, display_label, fused_conf)
+                cfg_ver = 1
+                if self.camera_config_manager:
+                    prof = self.camera_config_manager.get_profile(camera_id)
+                    if prof:
+                        cfg_ver = prof.version
+
+                # Construct Version Bundle & Provenance Record
                 try:
-                    cropped = frame[max(0, t):min(fh, b), max(0, l):min(fw, r)].copy()
-                    pending_label = self.pending_saver.save(emb, cropped)
-                    if pending_label is not None:
-                        display_label = pending_label
+                    from facial_recognition.version_bundle import ModelConfigVersionBundle
+                    from facial_recognition.provenance import ProvenanceTracker
+                    
+                    bundle = ModelConfigVersionBundle(
+                        detection_model_version="scrfd_500m_bnkps_v1",
+                        embedding_model_version="w600k_mbf_v1",
+                        gallery_version=1,
+                        threshold_version=1,
+                        camera_config_version=cfg_ver,
+                        algorithm_version="temporal_fusion_v2",
+                    )
+                    
+                    prov_tracker = ProvenanceTracker(
+                        camera_id=camera_id,
+                        frame_reference=f"frm_{camera_id}_{int(now*1000)}",
+                        track_id=track_id,
+                    )
+                    for o_idx in range(len(track.observations)):
+                        prov_tracker.add_observation(f"obs_{track_id}_{o_idx+1}")
+                    
+                    if track.fused_embedding is not None:
+                        prov_tracker.set_embedding_vector(track.fused_embedding)
+                    prov_tracker.add_candidate(fused_id, fused_conf, rank=1)
+                    
+                    prov = prov_tracker.finalize(
+                        event_id=f"evt_{camera_id}_{int(now*1000)}",
+                        identity=fused_id,
+                        confidence=fused_conf,
+                        decision_tier="TEMPORAL_FUSED",
+                    )
                 except Exception:
-                    pass
+                    bundle = None
+                    prov = None
 
-            self.logger.log_detection(camera_id, full_bbox, display_label, confidence)
-            self._annotate_frame(annotated_frame, full_bbox, display_label, confidence)
+                self.logger.log_detection(
+                    camera_id, 
+                    full_bbox, 
+                    fused_id, 
+                    fused_conf, 
+                    quality_score=obs.quality_score,
+                    config_version=cfg_ver,
+                    version_bundle=bundle,
+                    provenance=prov,
+                )
+            elif obs.quality_category == "POOR":
+                display_label = f"[{track_id}] Poor Quality ({obs.quality_score:.0f})"
+                self._annotate_frame(annotated_frame, full_bbox, display_label, 0.0)
+            else:
+                display_label = f"[{track_id}] Assessing {fused_id} ({track.valid_embeddings_count}/{self.track_manager.min_obs})"
+                self._annotate_frame(annotated_frame, full_bbox, display_label, fused_conf)
 
+        self._draw_fps(annotated_frame, annotated_frame.shape[:2])
+        with self.latest_frame_lock:
+            self.latest_frame = annotated_frame
         self._draw_fps(annotated_frame, annotated_frame.shape[:2])
         with self.latest_frame_lock:
             self.latest_frame = annotated_frame
@@ -261,6 +396,9 @@ def main() -> None:
         profile_lookup=profile_lookup,
     )
 
+    from facial_recognition.quality import FaceQualityAssessor
+    quality_assessor = FaceQualityAssessor(config.get('quality_thresholds', {}))
+
     camera_pipelines: List[Any] = []
     pending_saver = PendingSaver(project_root / 'pending')
     for camera_id, source in build_camera_sources(config, options.webcam_index):
@@ -276,6 +414,8 @@ def main() -> None:
             capture_height=cam_h,
             reconnect_interval=reconnect_interval,
             model_name=model_name,
+            quality_assessor=quality_assessor,
+            track_fusion_cfg=config.get('track_fusion', {}),
         )
         camera_pipelines.append(pipeline)
 

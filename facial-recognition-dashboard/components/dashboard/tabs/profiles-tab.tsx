@@ -1,8 +1,8 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { fetchDuplicates, fetchProfiles } from '@/lib/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { assignUnregisteredSubject, deleteProfile, deleteProfileEmbeddings, deleteUnregisteredEvent, deleteUnregisteredSubject, fetchDuplicates, fetchProfiles, fetchUnregisteredSubjects, mergeUnregisteredSubjects, registerUnregisteredSubject, renameUnregisteredSubject, updateProfile } from '@/lib/api'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,11 +30,16 @@ import {
   CircleDashed,
   CircleSlash,
   Copy,
+  Check,
+  Pencil,
+  Trash2,
   GitMerge,
   ImagePlus,
+  ScanFace,
   TriangleAlert,
   UserRoundPlus,
   UsersRound,
+  X,
 } from 'lucide-react'
 
 const embeddingMeta: Record<
@@ -72,9 +77,29 @@ const ROLE_FILTERS: Array<'all' | ProfileRole> = [
   'blacklist',
 ]
 
-function ProfileCard({ profile }: { profile: Profile }) {
+function ProfileCard({ profile, onSave, onClearVectors, onDelete }: { profile: Profile; onSave: (changes: { name: string; role: ProfileRole; department: string }) => void; onClearVectors: () => void; onDelete: () => void }) {
   const meta = embeddingMeta[profile.embeddingStatus]
   const Icon = meta.icon
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(profile.name)
+  const [department, setDepartment] = useState(profile.department)
+  const [draftRole, setDraftRole] = useState<ProfileRole>(profile.role)
+
+  const startEditing = () => {
+    setName(profile.name)
+    setDepartment(profile.department)
+    setDraftRole(profile.role)
+    setEditing(true)
+  }
+
+  const cancelEditing = () => setEditing(false)
+
+  const confirmEditing = () => {
+    if (!name.trim()) return
+    onSave({ name: name.trim(), role: draftRole, department: department.trim() })
+    setEditing(false)
+  }
+
   return (
     <Card
       className={cn(
@@ -88,11 +113,44 @@ function ProfileCard({ profile }: { profile: Profile }) {
           size="lg"
           flagged={profile.role === 'blacklist'}
         />
-        <div>
-          <p className="text-sm font-semibold">{profile.name}</p>
+        <div className="w-full">
+          {editing ? (
+            <Input aria-label={`Name for ${profile.name}`} value={name} onChange={(event) => setName(event.target.value)} className="h-8 text-xs" />
+          ) : <p className="text-sm font-semibold">{profile.name}</p>}
           <p className="font-mono text-[11px] text-muted-foreground">{profile.id}</p>
         </div>
-        <RoleBadge role={profile.role} />
+        {editing ? (
+          <div className="w-full space-y-2">
+            <select aria-label={`Role for ${profile.name}`} value={draftRole} onChange={(event) => setDraftRole(event.target.value as ProfileRole)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs capitalize">
+              {ROLE_FILTERS.slice(1).map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+            <Input aria-label={`Department for ${profile.name}`} value={department} onChange={(event) => setDepartment(event.target.value)} placeholder="Department" className="h-8 text-xs" />
+            <div className="flex gap-2">
+              <Button size="xs" className="flex-1" onClick={confirmEditing} disabled={!name.trim()}><Check /> Confirm</Button>
+              <Button size="xs" variant="outline" onClick={cancelEditing}><X /></Button>
+            </div>
+            <Button size="xs" variant="ghost" className="w-full text-muted-foreground" disabled={profile.embeddingCount === 0} onClick={onClearVectors}>
+              Clear {profile.embeddingCount} vectors
+            </Button>
+          </div>
+        ) : (
+          <div className="flex w-full items-center justify-between gap-2">
+            <RoleBadge role={profile.role} />
+            <div className="flex items-center gap-1.5">
+              <Button size="xs" variant="outline" onClick={startEditing}><Pencil /> Edit</Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                title={`Delete ${profile.name}`}
+                aria-label={`Delete ${profile.name}`}
+                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                onClick={onDelete}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="w-full space-y-1.5 border-t border-border pt-3 text-left">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Department</span>
@@ -266,13 +324,97 @@ function DedupPanel() {
   )
 }
 
+function UnregisteredVectorsPanel({ profiles }: { profiles: Profile[] }) {
+  const queryClient = useQueryClient()
+  const { data: subjects = [], isLoading } = useQuery({
+    queryKey: ['unregistered-vectors'],
+    queryFn: fetchUnregisteredSubjects,
+  })
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['unregistered-vectors'] })
+  const renameMutation = useMutation({ mutationFn: ({ id, name }: { id: string; name: string }) => renameUnregisteredSubject(id, name), onSuccess: refresh })
+  const registerMutation = useMutation({ mutationFn: ({ id, name, role }: { id: string; name: string; role: ProfileRole }) => registerUnregisteredSubject(id, { name, role }), onSuccess: () => { refresh(); queryClient.invalidateQueries({ queryKey: ['profiles'] }) } })
+  const assignMutation = useMutation({ mutationFn: ({ id, profileId }: { id: string; profileId: string }) => assignUnregisteredSubject(id, profileId), onSuccess: () => { refresh(); queryClient.invalidateQueries({ queryKey: ['profiles'] }) } })
+  const mergeMutation = useMutation({ mutationFn: ({ id, sourceId }: { id: string; sourceId: string }) => mergeUnregisteredSubjects(id, sourceId), onSuccess: refresh })
+  const deleteEventMutation = useMutation({ mutationFn: ({ subjectId, eventId }: { subjectId: string; eventId: string }) => deleteUnregisteredEvent(subjectId, eventId), onSuccess: refresh })
+  const deleteSubjectMutation = useMutation({ mutationFn: deleteUnregisteredSubject, onSuccess: refresh })
+
+  return (
+    <Card className="gap-0 py-0">
+      <CardHeader className="border-b border-border py-3">
+        <SectionHeading
+          icon={ScanFace}
+          title="Unregistered Vectors"
+          count={subjects.length}
+          description="Similarity-grouped unknown captures awaiting identity assignment"
+        />
+      </CardHeader>
+      <CardContent className="p-4">
+        {isLoading ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">Loading captures...</p>
+        ) : subjects.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-muted-foreground">
+            <ScanFace className="size-8 opacity-50" />
+            <p className="text-sm">No embedded unknown subjects found</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {subjects.map((subject) => (
+              <div key={subject.id} className="rounded-lg border border-border bg-card/50 p-3">
+                <div className="flex items-start gap-3">
+                  <FaceTile tone="rose" size="md" flagged />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">{subject.displayName}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{subject.captureCount} captures · {subject.cameras.join(', ')}</p>
+                    <p className="font-mono text-[11px] text-muted-foreground">{formatTime(subject.firstSeen)} - {formatTime(subject.lastSeen)} · best {(subject.bestConfidence * 100).toFixed(1)}%</p>
+                    <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">Vector {subject.vectorDimension}D · SHA-256 {subject.representativeFingerprint.slice(0, 16)}...</p>
+                  </div>
+                  <Button size="icon" variant="ghost" title="Delete subject group" aria-label={`Delete ${subject.displayName}`} className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => { if (window.confirm(`Delete ${subject.displayName} and all ${subject.captureCount} events?`)) deleteSubjectMutation.mutate(subject.id) }}><Trash2 className="size-3.5" /></Button>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <Button size="xs" variant="outline" onClick={() => { const name = window.prompt('Name for this subject', subject.displayName); if (name?.trim()) renameMutation.mutate({ id: subject.id, name }) }}><Pencil /> Rename</Button>
+                  <Button size="xs" onClick={() => { const name = window.prompt('Register as new profile', subject.displayName); if (name?.trim()) registerMutation.mutate({ id: subject.id, name, role: 'visitor' }) }}><UserRoundPlus /> Register</Button>
+                  <select aria-label={`Assign ${subject.displayName} to profile`} className="h-6 min-w-0 rounded-md border border-border bg-background px-2 text-xs" defaultValue="" onChange={(event) => { if (event.target.value) assignMutation.mutate({ id: subject.id, profileId: event.target.value }); event.target.value = '' }}>
+                    <option value="">Assign to profile...</option>
+                    {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                  </select>
+                  <select aria-label={`Merge ${subject.displayName}`} className="h-6 min-w-0 rounded-md border border-border bg-background px-2 text-xs" defaultValue="" onChange={(event) => { if (event.target.value) mergeMutation.mutate({ id: subject.id, sourceId: event.target.value }); event.target.value = '' }}>
+                    <option value="">Merge another group...</option>
+                    {subjects.filter((candidate) => candidate.id !== subject.id).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>)}
+                  </select>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {subject.eventIds.slice(0, 8).map((eventId) => <Button key={eventId} size="xs" variant="ghost" title={`Delete event ${eventId}`} className="font-mono text-[10px] text-muted-foreground hover:text-destructive" onClick={() => { if (window.confirm('Delete this event?')) deleteEventMutation.mutate({ subjectId: subject.id, eventId }) }}>{eventId.slice(0, 8)} <Trash2 /></Button>)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ProfilesTab() {
+  const queryClient = useQueryClient()
   const { data: profiles = [] } = useQuery({
     queryKey: ['profiles'],
     queryFn: () => fetchProfiles(),
   })
   const [role, setRole] = useState<'all' | ProfileRole>('all')
   const [query, setQuery] = useState('')
+  const [view, setView] = useState<'registered' | 'unregistered'>('registered')
+  const updateMutation = useMutation({
+    mutationFn: ({ profileId, name, role, department }: { profileId: string; name: string; role: ProfileRole; department: string }) => updateProfile(profileId, { name, role, department }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+  })
+  const deleteMutation = useMutation({
+    mutationFn: deleteProfile,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+  })
+  const clearVectorsMutation = useMutation({
+    mutationFn: deleteProfileEmbeddings,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+  })
 
   const filtered = useMemo(() => {
     return profiles.filter((p) => {
@@ -292,7 +434,15 @@ export function ProfilesTab() {
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_360px]">
       <div className="flex flex-col gap-4">
-        <Card className="gap-0 py-0">
+        <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/30 p-1">
+          <Button size="sm" variant={view === 'registered' ? 'secondary' : 'ghost'} className="flex-1" onClick={() => setView('registered')}>
+            Registered Vectors
+          </Button>
+          <Button size="sm" variant={view === 'unregistered' ? 'secondary' : 'ghost'} className="flex-1" onClick={() => setView('unregistered')}>
+            Unregistered Vectors
+          </Button>
+        </div>
+        {view === 'unregistered' ? <UnregisteredVectorsPanel profiles={profiles} /> : <Card className="gap-0 py-0">
           <CardHeader className="border-b border-border py-3">
             <SectionHeading
               icon={UsersRound}
@@ -325,12 +475,12 @@ export function ProfilesTab() {
           </CardHeader>
           <CardContent className="p-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
-              {filtered.map((p) => (
-                <ProfileCard key={p.id} profile={p} />
+                {filtered.map((p) => (
+                <ProfileCard key={p.id} profile={p} onSave={(changes) => updateMutation.mutate({ profileId: p.id, ...changes })} onClearVectors={() => { if (window.confirm(`Remove all ${p.embeddingCount} vectors for ${p.name}?`)) clearVectorsMutation.mutate(p.id) }} onDelete={() => { if (window.confirm(`Delete ${p.name} and its vectors? Historical detections will remain.`)) deleteMutation.mutate(p.id) }} />
               ))}
             </div>
           </CardContent>
-        </Card>
+        </Card>}
       </div>
 
       <DedupPanel />

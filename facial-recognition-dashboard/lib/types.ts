@@ -88,6 +88,20 @@ export interface UnknownCapture {
   snapshotTone: string
 }
 
+export interface UnregisteredSubject {
+  id: string
+  displayName: string
+  captureCount: number
+  firstSeen: string
+  lastSeen: string
+  cameras: string[]
+  bestConfidence: number
+  representativeFingerprint: string
+  vectorDimension: number
+  eventIds: string[]
+  status: string
+}
+
 export interface Profile {
   id: string
   name: string
@@ -193,3 +207,87 @@ export interface ModelThresholds {
   unknownFaceRetentionDays: number
   autoAlertOnBlacklist: boolean
 }
+
+export interface VersionBundle {
+  detectionModelVersion: string
+  embeddingModelVersion: string
+  galleryVersion: number
+  thresholdVersion: number
+  cameraConfigVersion: number
+  algorithmVersion: string
+  versionBundleHash: string
+  isProductionReady: boolean
+  createdAt: string
+}
+
+export interface NodeHealthReport {
+  nodeId: string
+  hostname?: string
+  status: string
+  cpuPercent: number
+  gpuPercent: number
+  memoryPercent: number
+  temperatureC?: number
+  diskUsagePercent: number
+  diskFreeMb: number
+  cameraFps: number
+  inferenceFps: number
+  networkLatencyMs: number
+  syncQueueLength: number
+  eventBacklog: number
+  recognitionLatencyMs: number
+  runtimeMode: string
+  frameSamplingRate: number
+  syncBatchSize: number
+  syncIntervalSeconds: number
+  reportedAt: string
+}
+
+export interface ProvenanceCandidate {
+  identity: string
+  similarity: number
+  rank: number
+}
+
+export interface ProvenanceStage {
+  stage: string
+  timestamp: string
+  metadata: Record<string, any>
+}
+
+export interface RecognitionProvenance {
+  eventId: string
+  detectionId?: string
+  cameraId: string
+  frameReference: string
+  trackId: string
+  observationCount: number
+  observationReferences: string[]
+  detectionModelVersion: string
+  embeddingModelVersion: string
+  embeddingFingerprint: string
+  candidateMatches: ProvenanceCandidate[]
+  selectedIdentity: string
+  confidence: number
+  decisionTier: string
+  cameraConfigVersion: number
+  cloudRecordId?: string
+  decisionTimestamp: string
+  provenanceChainHash: string
+  stages: ProvenanceStage[]
+}
+
+export interface CameraConfigProfile {
+  id: string
+  cameraId: string
+  version: number
+  detectionThreshold: number
+  recognitionThreshold: number
+  qualityThreshold: number
+  samplingRate: number
+  temporalWindow: number
+  isActive: boolean
+  createdAt: string
+  updatedAt?: string
+}
+

@@ -220,6 +220,7 @@ function TrajectoryTimeline() {
   const { data: trajectory } = useQuery({
     queryKey: ['trajectory'],
     queryFn: () => fetchTrajectory(),
+    enabled: false,
   })
   if (!trajectory) return null
 

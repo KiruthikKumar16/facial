@@ -1,17 +1,16 @@
-'use client'
-
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { fetchCameras, fetchThresholds, saveThresholds } from '@/lib/api'
+import { fetchCameras, fetchThresholds, saveThresholds, fetchNodeHealth } from '@/lib/api'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { SectionHeading } from '@/components/dashboard/shared'
+import { CameraConfigDialog } from '@/components/dashboard/camera-config-dialog'
 import { cn } from '@/lib/utils'
 import { formatTime } from '@/lib/format'
-import type { Camera, CameraStatus, ModelThresholds } from '@/lib/types'
+import type { Camera, CameraStatus, ModelThresholds, NodeHealthReport } from '@/lib/types'
 import {
   Cctv,
   Cpu,
@@ -19,8 +18,13 @@ import {
   ServerCog,
   ShieldCheck,
   SlidersHorizontal,
+  Sliders,
   Wifi,
   WifiOff,
+  Activity,
+  HardDrive,
+  Layers,
+  Zap,
 } from 'lucide-react'
 
 const statusMeta: Record<
@@ -46,7 +50,13 @@ function LoadBar({ label, value, tone }: { label: string; value: number; tone: s
   )
 }
 
-function CameraCard({ camera }: { camera: Camera }) {
+function CameraCard({
+  camera,
+  onConfigure,
+}: {
+  camera: Camera
+  onConfigure: (camera: Camera) => void
+}) {
   const meta = statusMeta[camera.status]
   const offline = camera.status === 'offline'
   const latencyTone =
@@ -75,10 +85,21 @@ function CameraCard({ camera }: { camera: Camera }) {
               </p>
             </div>
           </div>
-          <span className={cn('flex items-center gap-1.5 text-xs font-medium', meta.text)}>
-            <span className={cn('size-2 rounded-full', meta.dot)} />
-            {meta.label}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={cn('flex items-center gap-1.5 text-xs font-medium', meta.text)}>
+              <span className={cn('size-2 rounded-full', meta.dot)} />
+              {meta.label}
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              className="h-7 gap-1 px-2 font-mono text-[11px]"
+              onClick={() => onConfigure(camera)}
+            >
+              <Sliders className="size-3 text-primary" />
+              <span>Config</span>
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-2 rounded-md bg-muted/40 p-2.5 text-center">
@@ -137,7 +158,7 @@ function CameraCard({ camera }: { camera: Camera }) {
   )
 }
 
-function CameraGrid() {
+function CameraGrid({ onConfigure }: { onConfigure: (camera: Camera) => void }) {
   const { data: cameras = [] } = useQuery({
     queryKey: ['cameras'],
     queryFn: () => fetchCameras(),
@@ -146,13 +167,14 @@ function CameraGrid() {
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b border-border py-3">
+        <h2 className="text-lg font-semibold mt-2" data-testid="camera-node-health-heading">Camera Node Health</h2>
         <SectionHeading
           icon={Cctv}
           title="Camera Node Health"
-          description={`${online}/${cameras.length} nodes streaming · RTSP ingest pipeline`}
+          description={`${online}/${cameras.length} nodes streaming · Per-camera adaptive threshold profiles`}
           action={
             <Badge className="rounded-md bg-muted font-mono text-muted-foreground">
-              GPU cluster: 2× A10G
+              Auto-sync: Active
             </Badge>
           }
         />
@@ -160,7 +182,7 @@ function CameraGrid() {
       <CardContent className="p-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
           {cameras.map((c) => (
-            <CameraCard key={c.id} camera={c} />
+            <CameraCard key={c.id} camera={c} onConfigure={onConfigure} />
           ))}
         </div>
       </CardContent>
@@ -168,190 +190,115 @@ function CameraGrid() {
   )
 }
 
-function ThresholdSlider({
-  label,
-  description,
-  value,
-  min,
-  max,
-  suffix,
-  onChange,
-}: {
-  label: string
-  description: string
-  value: number
-  min: number
-  max: number
-  suffix?: string
-  onChange: (v: number) => void
-}) {
-  return (
-    <div className="space-y-2.5 rounded-lg border border-border bg-card/50 p-3.5">
-      <div className="flex items-center justify-between">
-        <Label className="text-sm">{label}</Label>
-        <span className="font-mono text-sm font-semibold tabular-nums text-info">
-          {value}
-          {suffix}
-        </span>
-      </div>
-      <Slider
-        value={[value]}
-        min={min}
-        max={max}
-        step={1}
-        onValueChange={(v) => onChange(Array.isArray(v) ? v[0] : v)}
-      />
-      <p className="text-xs text-muted-foreground">{description}</p>
-    </div>
-  )
-}
-
-function ThresholdPanel() {
-  const { data } = useQuery({ queryKey: ['thresholds'], queryFn: () => fetchThresholds() })
-  const save = useMutation({ mutationFn: saveThresholds })
-  const [draft, setDraft] = useState<ModelThresholds | null>(null)
-
-  useEffect(() => {
-    if (data && !draft) setDraft(data)
-  }, [data, draft])
-
-  if (!draft) {
-    return (
-      <Card className="h-48 animate-pulse py-0">
-        <CardContent className="p-4" />
-      </Card>
-    )
-  }
-
-  const dirty = JSON.stringify(draft) !== JSON.stringify(data)
+function NodeHealthPanel() {
+  const { data: nodes = [], isLoading, isError } = useQuery({
+    queryKey: ['node-health'],
+    queryFn: () => fetchNodeHealth(),
+    refetchInterval: 5000,
+  })
 
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b border-border py-3">
+        <h2 className="text-lg font-semibold mt-2" data-testid="edge-runtime-controller-heading">Edge Runtime Controller</h2>
         <SectionHeading
-          icon={SlidersHorizontal}
-          title="Model Thresholds"
-          description="Live tuning of global recognition parameters"
+          icon={Activity}
+          title="Edge Runtime Controller"
+          description="Live health telemetry and adaptive throttling status across edge nodes"
         />
       </CardHeader>
-      <CardContent className="flex flex-col gap-3 p-4">
-        <ThresholdSlider
-          label="Recognition Confidence"
-          description="Minimum cosine confidence to accept an identity match."
-          value={draft.recognitionConfidence}
-          min={50}
-          max={99}
-          suffix="%"
-          onChange={(v) => setDraft({ ...draft, recognitionConfidence: v })}
-        />
-        <ThresholdSlider
-          label="Liveness Score"
-          description="Minimum anti-spoofing score before a face is trusted."
-          value={draft.livenessScore}
-          min={0}
-          max={100}
-          onChange={(v) => setDraft({ ...draft, livenessScore: v })}
-        />
-        <ThresholdSlider
-          label="Unknown Face Retention"
-          description="Days to retain unmatched captures before purge."
-          value={draft.unknownFaceRetentionDays}
-          min={1}
-          max={90}
-          suffix="d"
-          onChange={(v) => setDraft({ ...draft, unknownFaceRetentionDays: v })}
-        />
+      <CardContent className="p-4 space-y-3">
+        {isLoading && (
+          <div className="py-6 text-center text-xs text-muted-foreground animate-pulse">
+            Connecting to runtime controller telemetry...
+          </div>
+        )}
 
-        <button
-          type="button"
-          onClick={() =>
-            setDraft({ ...draft, autoAlertOnBlacklist: !draft.autoAlertOnBlacklist })
-          }
-          className="flex items-center justify-between rounded-lg border border-border bg-card/50 p-3.5 text-left"
-        >
-          <div className="flex items-center gap-2.5">
-            <ShieldCheck className="size-4 text-info" />
-            <div>
-              <p className="text-sm">Auto-alert on blacklist hit</p>
-              <p className="text-xs text-muted-foreground">
-                Raise a critical alert instantly on any BOLO match.
-              </p>
+        {isError && (
+          <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning text-center">
+            Runtime controller telemetry currently offline or in local fallback mode.
+          </div>
+        )}
+
+        {nodes.length === 0 && !isLoading && !isError && (
+          <div className="rounded-lg border border-border bg-muted/20 p-4 text-center text-xs text-muted-foreground">
+            No external edge nodes reporting. Central node operating in NOMINAL mode.
+          </div>
+        )}
+
+        {nodes.map((node) => {
+          const isThrottled = node.runtimeMode === 'THROTTLED_COMPUTE'
+          const isDegraded = node.runtimeMode === 'DEGRADED_NETWORK'
+          const isEmergency = node.runtimeMode === 'EMERGENCY_DISK_PRESSURE'
+
+          const modeBadgeClass = isEmergency
+            ? 'bg-destructive/15 text-destructive border-destructive/30'
+            : isThrottled || isDegraded
+              ? 'bg-warning/15 text-warning border-warning/30'
+              : 'bg-success/15 text-success border-success/30'
+
+          return (
+            <div key={node.nodeId} className="rounded-lg border border-border bg-card/60 p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="size-2 rounded-full bg-success animate-pulse" />
+                  <span className="font-semibold text-sm">{node.nodeId}</span>
+                  {node.hostname && (
+                    <span className="font-mono text-xs text-muted-foreground">({node.hostname})</span>
+                  )}
+                </div>
+                <Badge variant="outline" className={cn('font-mono text-[10px]', modeBadgeClass)}>
+                  {node.runtimeMode}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+                <div className="rounded bg-muted/40 p-2">
+                  <span className="text-muted-foreground block text-[10px]">CPU / Memory</span>
+                  <span className="font-bold text-foreground">{node.cpuPercent.toFixed(1)}% / {node.memoryPercent.toFixed(1)}%</span>
+                </div>
+                <div className="rounded bg-muted/40 p-2">
+                  <span className="text-muted-foreground block text-[10px]">FPS (Cam / Infer)</span>
+                  <span className="font-bold text-foreground">{node.cameraFps.toFixed(1)} / {node.inferenceFps.toFixed(1)}</span>
+                </div>
+                <div className="rounded bg-muted/40 p-2">
+                  <span className="text-muted-foreground block text-[10px]">Sync Queue / Lag</span>
+                  <span className="font-bold text-foreground">{node.syncQueueLength} evts ({node.networkLatencyMs.toFixed(0)}ms)</span>
+                </div>
+                <div className="rounded bg-muted/40 p-2">
+                  <span className="text-muted-foreground block text-[10px]">Sampling / Batch</span>
+                  <span className="font-bold text-foreground">{node.frameSamplingRate}x / {node.syncBatchSize}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground pt-1 border-t border-border/50">
+                <span className="flex items-center gap-1">
+                  <HardDrive className="size-3" /> Disk Free: {node.diskFreeMb} MB
+                </span>
+                <span>Reported {formatTime(node.reportedAt)}</span>
+              </div>
             </div>
-          </div>
-          <span
-            className={cn(
-              'relative h-5 w-9 rounded-full transition-colors',
-              draft.autoAlertOnBlacklist ? 'bg-info' : 'bg-muted',
-            )}
-          >
-            <span
-              className={cn(
-                'absolute top-0.5 size-4 rounded-full bg-background transition-transform',
-                draft.autoAlertOnBlacklist ? 'left-0.5 translate-x-4' : 'left-0.5',
-              )}
-            />
-          </span>
-        </button>
-
-        <div className="flex items-center justify-between border-t border-border pt-3">
-          <p className="text-xs text-muted-foreground">
-            {save.isSuccess && !dirty
-              ? 'Thresholds pushed to all nodes.'
-              : dirty
-                ? 'Unsaved changes'
-                : 'Synced with edge nodes'}
-          </p>
-          <Button
-            size="sm"
-            disabled={!dirty || save.isPending}
-            onClick={() => save.mutate(draft)}
-          >
-            <Gauge /> {save.isPending ? 'Applying…' : 'Apply Thresholds'}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function ServerVitals() {
-  return (
-    <Card className="gap-0 py-0">
-      <CardHeader className="border-b border-border py-3">
-        <SectionHeading icon={Cpu} title="Inference Server" description="Aggregate load" />
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3 p-4">
-        <LoadBar label="GPU cluster" value={68} tone="bg-info" />
-        <LoadBar label="CPU" value={44} tone="bg-info" />
-        <LoadBar label="VRAM" value={73} tone="bg-warning" />
-        <LoadBar label="Vector index memory" value={51} tone="bg-info" />
-        <div className="grid grid-cols-2 gap-2 border-t border-border pt-3 text-center">
-          <div>
-            <p className="font-mono text-lg font-semibold tabular-nums">58ms</p>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              Avg latency
-            </p>
-          </div>
-          <div>
-            <p className="font-mono text-lg font-semibold tabular-nums">1.2M</p>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              Indexed vectors
-            </p>
-          </div>
-        </div>
+          )
+        })}
       </CardContent>
     </Card>
   )
 }
 
 export function SystemTab() {
+  const [configuredCamera, setConfiguredCamera] = useState<Camera | null>(null)
+
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_380px]">
-      <CameraGrid />
-      <div className="flex flex-col gap-4">
-        <ThresholdPanel />
-        <ServerVitals />
-      </div>
+      <CameraConfigDialog
+          camera={configuredCamera}
+          onClose={() => setConfiguredCamera(null)}
+        />
+
+        <div className="flex flex-col gap-4">
+          <CameraGrid onConfigure={(cam) => setConfiguredCamera(cam)} />
+          <NodeHealthPanel />
+        </div>
     </div>
   )
 }

@@ -1,7 +1,7 @@
 """Import CSV detections into PostgreSQL database."""
 import csv
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional
 
@@ -50,7 +50,7 @@ def ingest_csv_to_db(csv_path: str, db_url: str, batch_size: int = 100) -> None:
             try:
                 timestamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
             except Exception:
-                timestamp = datetime.utcnow()
+                timestamp = datetime.now(timezone.utc)
             
             # Parse bbox
             bbox = parse_bbox(str(row.get('bbox', '[]')))

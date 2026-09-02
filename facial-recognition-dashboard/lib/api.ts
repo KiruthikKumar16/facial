@@ -14,6 +14,7 @@ import type {
   Alert,
   AttendanceRecord,
   Camera,
+  CameraConfigProfile,
   DemographicSlice,
   DuplicateCandidate,
   FaceLog,
@@ -23,13 +24,17 @@ import type {
   ModelThresholds,
   MovementEdge,
   MovementNetwork,
+  NodeHealthReport,
   Profile,
   ProfileRole,
+  RecognitionProvenance,
   SubjectTrajectory,
   SystemKpis,
   SystemHealth,
   TrajectoryNode,
   UnknownCapture,
+  UnregisteredSubject,
+  VersionBundle,
 } from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:1223'
@@ -608,6 +613,42 @@ export const fetchProfile = async (profileId: string): Promise<Profile | null> =
   }
 }
 
+export const updateProfile = async (
+  profileId: string,
+  payload: { name?: string; role?: ProfileRole; department?: string },
+): Promise<Profile> => {
+  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return adaptProfile(await handleResponse<any>(response))
+}
+
+export const deleteProfile = async (profileId: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) await handleResponse<any>(response)
+}
+
+export const deleteProfileEmbedding = async (
+  profileId: string,
+  embeddingId: string,
+): Promise<void> => {
+  const response = await fetch(apiUrl(
+    `/api/profiles/${encodeURIComponent(profileId)}/embeddings/${encodeURIComponent(embeddingId)}`,
+  ), { method: 'DELETE' })
+  if (!response.ok) await handleResponse<any>(response)
+}
+
+export const deleteProfileEmbeddings = async (profileId: string): Promise<void> => {
+  const response = await fetch(apiUrl(
+    `/api/profiles/${encodeURIComponent(profileId)}/embeddings`,
+  ), { method: 'DELETE' })
+  if (!response.ok) await handleResponse<any>(response)
+}
+
 type CreateProfilePayload = {
   name: string
   role?: string
@@ -703,7 +744,7 @@ export const mergeProfiles = async (
 // ==================== Unknown Captures ====================
 
 export const fetchUnknownCaptures = async (): Promise<UnknownCapture[]> => {
-  const logs = await fetchFaceLogs(100)
+  const logs = await fetchFaceLogs(1000)
   try {
     return logs
       .filter((log) => log.status === 'unknown')
@@ -722,6 +763,58 @@ export const fetchUnknownCaptures = async (): Promise<UnknownCapture[]> => {
     console.error('fetchUnknownCaptures adapt failed:', e)
     return []
   }
+}
+
+function adaptUnregisteredSubject(raw: any): UnregisteredSubject {
+  return {
+    id: strOrEmpty(raw.id),
+    displayName: strOrEmpty(raw.display_name ?? raw.displayName),
+    captureCount: numOrZero(raw.capture_count ?? raw.captureCount),
+    firstSeen: strOrEmpty(raw.first_seen ?? raw.firstSeen),
+    lastSeen: strOrEmpty(raw.last_seen ?? raw.lastSeen),
+    cameras: Array.isArray(raw.cameras) ? raw.cameras.map(String) : [],
+    bestConfidence: numOrZero(raw.best_confidence ?? raw.bestConfidence),
+    representativeFingerprint: strOrEmpty(raw.representative_fingerprint ?? raw.representativeFingerprint),
+    vectorDimension: numOrZero(raw.vector_dimension ?? raw.vectorDimension),
+    eventIds: Array.isArray(raw.event_ids ?? raw.eventIds) ? (raw.event_ids ?? raw.eventIds).map(String) : [],
+    status: strOrEmpty(raw.status),
+  }
+}
+
+export const fetchUnregisteredSubjects = async (): Promise<UnregisteredSubject[]> => {
+  const response = await fetch(apiUrl('/api/unregistered-subjects'))
+  const raw = await handleResponse<any>(response)
+  return (Array.isArray(raw) ? raw : []).map(adaptUnregisteredSubject)
+}
+
+export const renameUnregisteredSubject = async (id: string, displayName: string) => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ display_name: displayName }) })
+  return adaptUnregisteredSubject(await handleResponse<any>(response))
+}
+
+export const registerUnregisteredSubject = async (id: string, payload: { name: string; role: ProfileRole; department?: string }) => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/register`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  return adaptProfile(await handleResponse<any>(response))
+}
+
+export const assignUnregisteredSubject = async (id: string, profileId: string) => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/assign`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile_id: profileId }) })
+  return adaptProfile(await handleResponse<any>(response))
+}
+
+export const mergeUnregisteredSubjects = async (id: string, sourceSubjectId: string) => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/merge`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_subject_id: sourceSubjectId }) })
+  return adaptUnregisteredSubject(await handleResponse<any>(response))
+}
+
+export const deleteUnregisteredEvent = async (subjectId: string, eventId: string) => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}/events/${encodeURIComponent(eventId)}`), { method: 'DELETE' })
+  if (!response.ok) await handleResponse<any>(response)
+}
+
+export const deleteUnregisteredSubject = async (subjectId: string) => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}`), { method: 'DELETE' })
+  if (!response.ok) await handleResponse<any>(response)
 }
 
 // ==================== Duplicates & Analytics ====================
@@ -966,6 +1059,172 @@ export const runForensicSearch = async (
   }
 }
 
+// ==================== System & Versioning APIs ====================
+
+export async function fetchVersionBundle(): Promise<VersionBundle> {
+  const res = await fetch(apiUrl('/api/system/version-bundle'))
+  const raw = await handleResponse<any>(res)
+  const comps = raw.components || {}
+  return {
+    detectionModelVersion: strOrEmpty(raw.detection_model_version ?? comps.detection_model),
+    embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? comps.embedding_model),
+    galleryVersion: numOrZero(raw.gallery_version ?? comps.gallery_version),
+    thresholdVersion: numOrZero(raw.threshold_version ?? comps.threshold_version),
+    cameraConfigVersion: numOrZero(raw.camera_config_version ?? comps.camera_config_version),
+    algorithmVersion: strOrEmpty(raw.algorithm_version ?? comps.algorithm_version),
+    versionBundleHash: strOrEmpty(raw.version_bundle_hash ?? raw.bundle_hash),
+    isProductionReady: boolOrFalse(raw.is_production_ready ?? true),
+    createdAt: strOrEmpty(raw.created_at),
+  }
+}
+
+export async function fetchNodeHealth(): Promise<NodeHealthReport[]> {
+  const res = await fetch(apiUrl('/api/nodes/health'))
+  const raw = await handleResponse<any>(res)
+  const nodes = Array.isArray(raw) ? raw : (raw.nodes || [])
+  return nodes.map((n: any) => {
+    const m = n.metrics || {}
+    return {
+      nodeId: strOrEmpty(n.node_id ?? n.nodeId ?? n.device_id),
+      hostname: n.hostname ? strOrEmpty(n.hostname) : undefined,
+      status: strOrEmpty(n.status || 'ONLINE'),
+      cpuPercent: numOrZero(n.cpu_percent ?? m.cpu_percent),
+      gpuPercent: numOrZero(n.gpu_percent ?? m.gpu_percent),
+      memoryPercent: numOrZero(n.memory_percent ?? m.memory_percent),
+      temperatureC: n.temperature_c !== undefined && n.temperature_c !== null ? numOrZero(n.temperature_c) : (m.temperature_c !== undefined ? numOrZero(m.temperature_c) : undefined),
+      diskUsagePercent: numOrZero(n.disk_usage_percent ?? m.disk_usage_percent),
+      diskFreeMb: numOrZero(n.disk_free_mb ?? m.disk_free_mb),
+      cameraFps: numOrZero(n.camera_fps ?? m.camera_fps),
+      inferenceFps: numOrZero(n.inference_fps ?? m.inference_fps),
+      networkLatencyMs: numOrZero(n.network_latency_ms ?? m.network_latency_ms),
+      syncQueueLength: numOrZero(n.sync_queue_length ?? m.sync_queue_length),
+      eventBacklog: numOrZero(n.event_backlog ?? m.event_backlog),
+      recognitionLatencyMs: numOrZero(n.recognition_latency_ms ?? m.recognition_latency_ms),
+      runtimeMode: strOrEmpty(n.runtime_mode ?? n.mode ?? 'NORMAL'),
+      frameSamplingRate: numOrZero(n.frame_sampling_rate ?? m.frame_sampling_rate ?? 1.0),
+      syncBatchSize: numOrZero(n.sync_batch_size ?? m.sync_batch_size ?? 50),
+      syncIntervalSeconds: numOrZero(n.sync_interval_seconds ?? m.sync_interval_seconds ?? 1.0),
+      reportedAt: strOrEmpty(n.reported_at ?? n.last_heartbeat),
+    }
+  })
+}
+
+export async function fetchProvenance(eventId: string): Promise<RecognitionProvenance> {
+  const res = await fetch(apiUrl(`/api/detections/${encodeURIComponent(eventId)}/provenance`))
+  const raw = await handleResponse<any>(res)
+  return {
+    eventId: strOrEmpty(raw.event_id),
+    detectionId: raw.detection_id ? strOrEmpty(raw.detection_id) : undefined,
+    cameraId: strOrEmpty(raw.camera_id),
+    frameReference: strOrEmpty(raw.frame_reference),
+    trackId: strOrEmpty(raw.track_id) || 'untracked',
+    observationCount: numOrZero(raw.observation_count) || (Array.isArray(raw.observation_references) ? raw.observation_references.length : 0),
+    observationReferences: Array.isArray(raw.observation_references) ? raw.observation_references : [],
+    detectionModelVersion: strOrEmpty(raw.detection_model_version),
+    embeddingModelVersion: strOrEmpty(raw.embedding_model_version),
+    embeddingFingerprint: strOrEmpty(raw.embedding_fingerprint),
+    candidateMatches: Array.isArray(raw.candidate_matches)
+      ? raw.candidate_matches.map((c: any) => ({
+          identity: strOrEmpty(c.identity),
+          similarity: numOrZero(c.similarity ?? c.score),
+          rank: numOrZero(c.rank),
+        }))
+      : [],
+    selectedIdentity: strOrEmpty(raw.selected_identity),
+    confidence: numOrZero(raw.confidence),
+    decisionTier: strOrEmpty(raw.decision_tier),
+    cameraConfigVersion: numOrZero(raw.camera_config_version),
+    cloudRecordId: raw.cloud_record_id ? strOrEmpty(raw.cloud_record_id) : undefined,
+    decisionTimestamp: strOrEmpty(raw.decision_timestamp),
+    provenanceChainHash: strOrEmpty(raw.provenance_chain_hash),
+    stages: Array.isArray(raw.stages)
+      ? raw.stages.map((s: any) => ({
+          stage: strOrEmpty(s.stage),
+          timestamp: strOrEmpty(s.timestamp),
+          metadata: s.metadata || {},
+        }))
+      : [],
+  }
+}
+
+export async function fetchCameraConfig(cameraId: string): Promise<CameraConfigProfile> {
+  const res = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`))
+  const raw = await handleResponse<any>(res)
+  return {
+    id: strOrEmpty(raw.id),
+    cameraId: strOrEmpty(raw.camera_id),
+    version: numOrZero(raw.version),
+    detectionThreshold: numOrZero(raw.detection_threshold),
+    recognitionThreshold: numOrZero(raw.recognition_threshold),
+    qualityThreshold: numOrZero(raw.quality_threshold),
+    samplingRate: numOrZero(raw.sampling_rate),
+    temporalWindow: numOrZero(raw.temporal_window),
+    isActive: boolOrFalse(raw.is_active),
+    createdAt: strOrEmpty(raw.created_at),
+    updatedAt: raw.updated_at ? strOrEmpty(raw.updated_at) : undefined,
+  }
+}
+
+export async function saveCameraConfig(
+  cameraId: string,
+  config: Partial<CameraConfigProfile>,
+): Promise<CameraConfigProfile> {
+  const payload: Record<string, any> = {}
+  if (config.detectionThreshold !== undefined) payload.detection_threshold = config.detectionThreshold
+  if (config.recognitionThreshold !== undefined) payload.recognition_threshold = config.recognitionThreshold
+  if (config.qualityThreshold !== undefined) payload.quality_threshold = config.qualityThreshold
+  if (config.samplingRate !== undefined) payload.sampling_rate = config.samplingRate
+  if (config.temporalWindow !== undefined) payload.temporal_window = config.temporalWindow
+
+  const res = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const raw = await handleResponse<any>(res)
+  return {
+    id: strOrEmpty(raw.id),
+    cameraId: strOrEmpty(raw.camera_id),
+    version: numOrZero(raw.version),
+    detectionThreshold: numOrZero(raw.detection_threshold),
+    recognitionThreshold: numOrZero(raw.recognition_threshold),
+    qualityThreshold: numOrZero(raw.quality_threshold),
+    samplingRate: numOrZero(raw.sampling_rate),
+    temporalWindow: numOrZero(raw.temporal_window),
+    isActive: boolOrFalse(raw.is_active),
+    createdAt: strOrEmpty(raw.created_at),
+    updatedAt: raw.updated_at ? strOrEmpty(raw.updated_at) : undefined,
+  }
+}
+
+export async function rollbackCameraConfig(
+  cameraId: string,
+  version?: number,
+): Promise<CameraConfigProfile> {
+  const endpoint = version !== undefined
+    ? `/api/cameras/${encodeURIComponent(cameraId)}/config/rollback/${version}`
+    : `/api/cameras/${encodeURIComponent(cameraId)}/config/rollback`
+  const res = await fetch(apiUrl(endpoint), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_version: version }),
+  })
+  const raw = await handleResponse<any>(res)
+  return {
+    id: strOrEmpty(raw.id),
+    cameraId: strOrEmpty(raw.camera_id),
+    version: numOrZero(raw.version),
+    detectionThreshold: numOrZero(raw.detection_threshold),
+    recognitionThreshold: numOrZero(raw.recognition_threshold),
+    qualityThreshold: numOrZero(raw.quality_threshold),
+    samplingRate: numOrZero(raw.sampling_rate),
+    temporalWindow: numOrZero(raw.temporal_window),
+    isActive: boolOrFalse(raw.is_active),
+    createdAt: strOrEmpty(raw.created_at),
+    updatedAt: raw.updated_at ? strOrEmpty(raw.updated_at) : undefined,
+  }
+}
+
 // ==================== WebSocket Connections ====================
 
 export const connectAlertsWebSocket = (
@@ -1005,3 +1264,4 @@ export const connectKpisWebSocket = (
 }
 
 export { API_URL, WS_URL }
+

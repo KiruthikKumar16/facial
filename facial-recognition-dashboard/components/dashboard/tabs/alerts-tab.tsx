@@ -43,8 +43,10 @@ import {
   UserPlus,
   UserRoundPlus,
   Video,
+  Workflow,
   X,
 } from 'lucide-react'
+import { LineageDrawer } from '@/components/dashboard/lineage-drawer'
 
 const PAGE_SIZE = 8
 
@@ -189,7 +191,7 @@ function CCTVTimestamp() {
     return () => clearInterval(id)
   }, [])
 
-  return <span suppressHydrationWarning>{time.toISOString().split('T')[1].substring(0, 8)} Z</span>
+  return <span suppressHydrationWarning>{formatTime(time.toISOString())} IST</span>
 }
 
 // --- Single camera tile with live MJPEG feed --------------------------------
@@ -365,6 +367,8 @@ function LogTable() {
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(0)
 
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+
   const filtered = useMemo(() => {
     return logs.filter((l) => {
       if (status !== 'all' && l.status !== status) return false
@@ -387,6 +391,7 @@ function LogTable() {
 
   return (
     <Card className="gap-0 py-0">
+      <LineageDrawer eventId={selectedEventId} onClose={() => setSelectedEventId(null)} />
       <CardHeader className="border-b border-border py-3">
         <SectionHeading
           icon={Search}
@@ -438,7 +443,8 @@ function LogTable() {
               <TableHead>Time</TableHead>
               <TableHead>Confidence</TableHead>
               <TableHead>Liveness</TableHead>
-              <TableHead className="pr-4">Status</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="pr-4 text-right">Lineage</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -474,14 +480,25 @@ function LogTable() {
                 <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
                   {l.livenessScore}
                 </TableCell>
-                <TableCell className="pr-4">
+                <TableCell>
                   <StatusBadge status={l.status} />
+                </TableCell>
+                <TableCell className="pr-4 text-right">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="h-7 gap-1 font-mono text-[11px]"
+                    onClick={() => setSelectedEventId(l.id)}
+                  >
+                    <Workflow className="size-3 text-primary" />
+                    <span>Lineage</span>
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                   No events match the current filters.
                 </TableCell>
               </TableRow>
