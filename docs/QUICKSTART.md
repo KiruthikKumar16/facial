@@ -519,7 +519,6 @@ logger = DetectionLogger(...)
 | `test_event_ledger.py` | Unit tests (70+ tests) |
 | `migrate_csv_to_ledger.py` | CSV migration tool |
 | `INTEGRATION_GUIDE.md` | Full documentation |
-| `IMPLEMENTATION_SUMMARY.md` | Overview & acceptance criteria |
 | `QUICKSTART.md` | This file - practical examples |
 
 ---
