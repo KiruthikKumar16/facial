@@ -2,7 +2,7 @@
 webcam_index: 0
 rtsp_urls:
   # Android IP Webcam — H.264 video-only RTSP stream.
-  - rtsp://192.168.1.67:8080/h264.sdp
+  - rtsp://192.168.1.73:8080/h264.sdp
   - rtsp://192.168.1.53:8080/h264.sdp
   
 
@@ -50,6 +50,14 @@ track_fusion:
 
 # Use GPU backend when available. Install onnxruntime-gpu separately for GPU support.
 use_gpu: false
+
+# Remote detection settings
+remote_detection:
+  enabled: false
+  endpoint: http://localhost:8000/detect  # URL of the remote detection service
+  timeout: 5.0  # HTTP request timeout in seconds
+  fallback_to_local: true  # Fall back to local detector if remote fails
+  det_size: [640, 640]  # Size to resize frames before sending to remote service
 
 # Resize every frame before inference for speed. This is the detection/embedding frame size.
 inference_frame_width: 640

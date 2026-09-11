@@ -12,20 +12,33 @@ This system processes live RTSP and webcam video feeds on local edge devices, ex
 - **Resilient Dual-Write Pipeline**: Employs a local `.csv` transaction log paired with asynchronous SQLAlchemy cloud inserts, ensuring zero data loss during network partitions.
 - **Identity Deduplication**: High-efficiency SQL self-joins compute vector distances across the entire database to automatically surface and merge duplicate identities.
 - **Robust Error Handling**: Granular React Error Boundaries prevent individual dashboard widgets from crashing the global UI.
+- **Distributed Processing**: Offload heavy ML inference to Google Colab/Kaggle GPUs using the PC frame sender and remote detection service.
 
 ## Tech Stack
 - **Frontend**: Next.js 14, React 18, TailwindCSS, Shadcn UI, Lucide Icons, `@tanstack/react-query`
 - **Backend API**: Python, FastAPI, Uvicorn, WebSockets, SQLAlchemy (ORM)
 - **Computer Vision / AI**: InsightFace, ONNX Runtime, OpenCV, NumPy
 - **Database**: PostgreSQL (Supabase) with the `pgvector` extension
-- **Deployment**: Vercel (Frontend), Render (Backend), Local PC (Edge CV Pipeline)
+- **Deployment**: Vercel (Frontend), Render (Backend), Local PC (Edge CV Pipeline), Google Colab/Kaggle (Remote Detection)
 
-## Architecture
+## Architecture Options
+
+### Option 1: Local Processing (Original)
 The architecture utilizes a distributed Edge-to-Cloud pattern:
 1. **Edge CV Node (`facial_recognition/`)**: A local Python process captures live video frames. `InsightFace` detects faces, extracts the 512-dim embedding tensors, and identifies known profiles. It synchronously writes the event to a local CSV archive while async-POSTing the data to the Cloud API.
 2. **Cloud API (`backend/`)**: A FastAPI server running on Render ingests edge events and inserts them into Supabase via SQLAlchemy. It also securely houses the ONNX models in memory during its `lifespan` to process manual image uploads (Forensic Search) without taxing the edge nodes.
 3. **Cloud Database (`Supabase`)**: Stores relational metadata (Profiles, Cameras, Alerts) and uses `pgvector` to index the 512-dim embedding arrays, allowing for mathematical cosine distance queries.
 4. **Cloud Dashboard (`facial-recognition-dashboard/`)**: A Next.js application that fetches historical aggregated analytics via REST and listens to FastAPI WebSockets for live React Query invalidations, ensuring the UI is perpetually up-to-date.
+
+### Option 2: Distributed Processing (New)
+For users who want to offload heavy ML inference to cloud GPUs:
+1. **Local PC**: Runs `pc_frame_sender.py` to capture video and send frames to remote detection service
+2. **Remote Detection Service** (Google Colab/Kaggle): Runs `colab_detection_service.py` to perform face detection/recognition using InsightFace GPUs
+3. **Cloud API (`backend/`)**: Same as Option 1 - receives detection events (either from local edge or remote service) and inserts into Supabase
+4. **Cloud Database (`Supabase`)**: Same as Option 1
+5. **Cloud Dashboard (`facial-recognition-dashboard/`)**: Same as Option 1
+
+See [GET_STARTED.md](GET_STARTED.md) for detailed setup instructions for the distributed processing option.
 
 ## I Built
 I served as the sole Full-Stack and Machine Learning Engineer for this project. I designed the 3-tier architecture, integrated the `InsightFace` ONNX models into both the local edge pipeline and the FastAPI backend, and wrote the raw `pgvector` SQL statements to handle vector similarity searches. I built the entire Next.js frontend, utilizing React Query and WebSockets to create a seamless, real-time command center, and deployed the distributed system across Vercel, Render, and Supabase.
@@ -37,13 +50,19 @@ I served as the sole Full-Stack and Machine Learning Engineer for this project. 
   **Solution**: Engineered a WebSocket pub/sub model in FastAPI. Instead of polling, the frontend subscribes to channels (e.g., `/ws/alerts`). When the backend detects a new database row, it pushes an invalidation signal to the client, triggering `@tanstack/react-query` to fetch exactly what it needs, exactly when it needs it.
 - **Challenge**: Managing duplicated identities when the same person walks past multiple cameras at different angles.
   **Solution**: Implemented an automated deduplication endpoint that performs a vector self-join on the `embeddings` table, flagging profiles with a cosine distance of `< 0.1` (>90% similar) for a one-click SQL transactional merge.
+- **Challenge**: Running heavy ML inference on local machines without GPUs is slow.
+  **Solution**: Created a distributed system that offloads face detection/recognition to Google Colab/Kaggle GPUs via the PC frame sender and remote detection service.
 
 ## Results
 - Successfully integrated a **512-dimensional vector** similarity search engine natively into the database layer.
 - Achieved **sub-100ms** latency for complex forensic queries against thousands of historical detections.
 - Deployed a **100% real-time** command dashboard with zero reliance on mock data or inefficient HTTP polling.
+- Enabled **GPU-accelerated processing** for users without local GPUs via Google Colab/Kaggle integration.
 
 ## Setup
+Choose your preferred processing option:
+
+### Option A: Local Processing (Recommended for machines with GPU)
 1. **Database Setup**: Spin up a Supabase PostgreSQL instance and enable the `pgvector` extension.
 2. **Backend**: 
    ```bash
@@ -60,8 +79,14 @@ I served as the sole Full-Stack and Machine Learning Engineer for this project. 
 4. **Edge CV**:
    ```bash
    cd facial_recognition
-   python run.py
+   python run.py          # With GPU
+   # or
+   python main_cpu.py     # CPU optimized
    ```
+
+### Option B: Distributed Processing (For GPU acceleration via Colab/Kaggle)
+See [GET_STARTED.md](GET_STARTED.md) for complete step-by-step instructions.
+
 ## Commands Cheat Sheet
 
 ### 1. Naming Unknown Faces (Gallery Management)
@@ -69,21 +94,24 @@ Run these from inside the `facial_recognition/` folder:
 - **`python review_pending.py`**: Reviews unknown faces saved in the `pending/` folder, prompts you for their name via a GUI, and adds them to the known gallery.
 - **`python enroll.py`**: Rebuilds the `gallery.npz` file from scratch using images placed inside `known_faces/`.
 
-### 2. Running the Edge Cameras
+### 2. Running the Edge Cameras (Local Processing)
 Run these from inside the `facial_recognition/` folder:
 - **`python main_cpu.py`**: Runs the highly-optimized camera script tuned for laptops/CPUs (skips frames, limits threads).
 - **`python run.py`**: The standard camera execution script, best used with a dedicated NVIDIA GPU.
 - **`python benchmark_detector.py`**: Tests your webcam and prints out the FPS and latency of the AI models.
 
-### 3. Running the FastAPI Backend
+### 3. Running the Distributed System
+- **`python facial_recognition/pc_frame_sender.py`**: Sends frames from local PC to remote detection service (see GET_STARTED.md for setup)
+
+### 4. Running the FastAPI Backend
 - **`.\scripts\run-backend.ps1`** (from root): A PowerShell wrapper to launch the Python backend.
 - **`uvicorn main:app --reload`** (from `backend/`): Manually starts the FastAPI server on `localhost:1223`.
 
-### 4. Running the Next.js Dashboard
+### 5. Running the Next.js Dashboard
 - **`.\scripts\run-frontend.ps1`** (from root): A PowerShell wrapper to launch the web interface.
 - **`pnpm dev`** (from `facial-recognition-dashboard/`): Manually starts the Next.js UI on `localhost:3000`.
 
-### 5. Setup & Validation
+### 6. Setup & Validation
 Run these from the root folder:
 - **`.\scripts\setup-all.ps1`**: Automatically creates Python virtual environments, installs requirements, and runs `pnpm install` for the frontend.
 - **`.\scripts\DEPLOYMENT_CHECKLIST.ps1`**: A helper script to quickly verify that all `.env` variables are correctly set before deployment.
@@ -91,3 +119,4 @@ Run these from the root folder:
 ## Links
 - **GitHub Repository**: [Your Link Here]
 - **Live Demo**: [Your Link Here]
+- **Getting Started Guide**: [GET_STARTED.md](GET_STARTED.md)

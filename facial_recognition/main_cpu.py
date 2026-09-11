@@ -537,8 +537,23 @@ def main():
         det_w, det_h, detector_model, cam_w, cam_h, cpu_tier, frame_skip, lock_resolution,
     )
 
+    # Load remote detection config
+    remote_cfg = cfg.get('remote_detection', {})
+    remote_enabled = remote_cfg.get('enabled', False)
+
     # detector and recognizer
-    detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
+    if remote_enabled:
+        from remote_detector import RemoteInsightFaceDetector
+        detector: Any = RemoteInsightFaceDetector(
+            endpoint=remote_cfg.get('endpoint', 'http://localhost:8000/detect'),
+            det_size=tuple(remote_cfg.get('det_size', [det_w, det_h])),
+            model_name=detector_model,
+            timeout=remote_cfg.get('timeout', 5.0),
+            fallback_to_local=remote_cfg.get('fallback_to_local', True)
+        )
+        logger.info(f"Using remote detector at {remote_cfg.get('endpoint')}")
+    else:
+        detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
     recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
 
     # Create profile lookup function for database logging
