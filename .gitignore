@@ -9,6 +9,9 @@ venv/
 myenv/
 backend/venv/
 *.sqlite3
+*.db
+*.db-shm
+*.db-wal
 *.log
 *.csv
 .DS_Store
@@ -26,6 +29,9 @@ node_modules/
 .next/
 out/
 .vercel/
+tsconfig.tsbuildinfo
+test-results/
+*-debug.png
 
 # Local face data and enrollments
 known_faces/
