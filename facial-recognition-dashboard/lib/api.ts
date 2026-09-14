@@ -2,12 +2,12 @@
  * Real API client for facial recognition backend.
  *
  * Supports both local development and cloud deployment:
- * - Local: http://localhost:1223
+ * - Local: http://localhost:8000
  * - Render: https://facial-api.render.com
  *
  * Configure via environment variables:
- * NEXT_PUBLIC_API_URL - Base API URL (default: http://localhost:1223)
- * NEXT_PUBLIC_WS_URL - WebSocket URL (default: ws://localhost:1223)
+ * NEXT_PUBLIC_API_URL - Base API URL (default: http://localhost:8000)
+ * NEXT_PUBLIC_WS_URL - WebSocket URL (default: ws://localhost:8000)
  */
 
 import type {
@@ -27,6 +27,8 @@ import type {
   NodeHealthReport,
   Profile,
   ProfileRole,
+  ProvenanceCandidate,
+  ProvenanceStage,
   RecognitionProvenance,
   SubjectTrajectory,
   SystemKpis,
@@ -37,9 +39,8 @@ import type {
   VersionBundle,
 } from './types'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:1223'
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:1223'
-const EDGE_API_URL = process.env.NEXT_PUBLIC_EDGE_API_URL || ''
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000'
 
 const VALID_ROLES: ProfileRole[] = [
   'employee',
@@ -62,11 +63,6 @@ const AVATAR_TONES = [
 
 function apiUrl(path: string): string {
   return `${API_URL}${path}`
-}
-
-function forensicApiUrl(path: string): string {
-  const baseUrl = EDGE_API_URL.trim() || API_URL
-  return `${baseUrl.replace(/\/$/, '')}${path}`
 }
 
 function wsUrl(channel: string): string {
@@ -613,42 +609,6 @@ export const fetchProfile = async (profileId: string): Promise<Profile | null> =
   }
 }
 
-export const updateProfile = async (
-  profileId: string,
-  payload: { name?: string; role?: ProfileRole; department?: string },
-): Promise<Profile> => {
-  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return adaptProfile(await handleResponse<any>(response))
-}
-
-export const deleteProfile = async (profileId: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
-    method: 'DELETE',
-  })
-  if (!response.ok) await handleResponse<any>(response)
-}
-
-export const deleteProfileEmbedding = async (
-  profileId: string,
-  embeddingId: string,
-): Promise<void> => {
-  const response = await fetch(apiUrl(
-    `/api/profiles/${encodeURIComponent(profileId)}/embeddings/${encodeURIComponent(embeddingId)}`,
-  ), { method: 'DELETE' })
-  if (!response.ok) await handleResponse<any>(response)
-}
-
-export const deleteProfileEmbeddings = async (profileId: string): Promise<void> => {
-  const response = await fetch(apiUrl(
-    `/api/profiles/${encodeURIComponent(profileId)}/embeddings`,
-  ), { method: 'DELETE' })
-  if (!response.ok) await handleResponse<any>(response)
-}
-
 type CreateProfilePayload = {
   name: string
   role?: string
@@ -744,7 +704,7 @@ export const mergeProfiles = async (
 // ==================== Unknown Captures ====================
 
 export const fetchUnknownCaptures = async (): Promise<UnknownCapture[]> => {
-  const logs = await fetchFaceLogs(1000)
+  const logs = await fetchFaceLogs(100)
   try {
     return logs
       .filter((log) => log.status === 'unknown')
@@ -763,58 +723,6 @@ export const fetchUnknownCaptures = async (): Promise<UnknownCapture[]> => {
     console.error('fetchUnknownCaptures adapt failed:', e)
     return []
   }
-}
-
-function adaptUnregisteredSubject(raw: any): UnregisteredSubject {
-  return {
-    id: strOrEmpty(raw.id),
-    displayName: strOrEmpty(raw.display_name ?? raw.displayName),
-    captureCount: numOrZero(raw.capture_count ?? raw.captureCount),
-    firstSeen: strOrEmpty(raw.first_seen ?? raw.firstSeen),
-    lastSeen: strOrEmpty(raw.last_seen ?? raw.lastSeen),
-    cameras: Array.isArray(raw.cameras) ? raw.cameras.map(String) : [],
-    bestConfidence: numOrZero(raw.best_confidence ?? raw.bestConfidence),
-    representativeFingerprint: strOrEmpty(raw.representative_fingerprint ?? raw.representativeFingerprint),
-    vectorDimension: numOrZero(raw.vector_dimension ?? raw.vectorDimension),
-    eventIds: Array.isArray(raw.event_ids ?? raw.eventIds) ? (raw.event_ids ?? raw.eventIds).map(String) : [],
-    status: strOrEmpty(raw.status),
-  }
-}
-
-export const fetchUnregisteredSubjects = async (): Promise<UnregisteredSubject[]> => {
-  const response = await fetch(apiUrl('/api/unregistered-subjects'))
-  const raw = await handleResponse<any>(response)
-  return (Array.isArray(raw) ? raw : []).map(adaptUnregisteredSubject)
-}
-
-export const renameUnregisteredSubject = async (id: string, displayName: string) => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ display_name: displayName }) })
-  return adaptUnregisteredSubject(await handleResponse<any>(response))
-}
-
-export const registerUnregisteredSubject = async (id: string, payload: { name: string; role: ProfileRole; department?: string }) => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/register`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-  return adaptProfile(await handleResponse<any>(response))
-}
-
-export const assignUnregisteredSubject = async (id: string, profileId: string) => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/assign`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile_id: profileId }) })
-  return adaptProfile(await handleResponse<any>(response))
-}
-
-export const mergeUnregisteredSubjects = async (id: string, sourceSubjectId: string) => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/merge`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_subject_id: sourceSubjectId }) })
-  return adaptUnregisteredSubject(await handleResponse<any>(response))
-}
-
-export const deleteUnregisteredEvent = async (subjectId: string, eventId: string) => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}/events/${encodeURIComponent(eventId)}`), { method: 'DELETE' })
-  if (!response.ok) await handleResponse<any>(response)
-}
-
-export const deleteUnregisteredSubject = async (subjectId: string) => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}`), { method: 'DELETE' })
-  if (!response.ok) await handleResponse<any>(response)
 }
 
 // ==================== Duplicates & Analytics ====================
@@ -860,28 +768,26 @@ export const fetchTrajectory = async (
   }
 }
 
-export const fetchMovementNetwork = async (hours = 24): Promise<MovementNetwork> => {
-  const response = await fetch(apiUrl(`/api/analytics/movement-network?hours=${hours}`))
-  const raw = await handleResponse<any>(response)
-  const edges = Array.isArray(raw?.edges) ? raw.edges : []
-  return {
-    edges: edges.map((edge: any): MovementEdge => ({
-      fromCameraId: strOrEmpty(edge.fromCameraId ?? edge.from_camera_id),
-      fromCameraName: strOrEmpty(edge.fromCameraName ?? edge.from_camera_name),
-      toCameraId: strOrEmpty(edge.toCameraId ?? edge.to_camera_id),
-      toCameraName: strOrEmpty(edge.toCameraName ?? edge.to_camera_name),
-      count: numOrZero(edge.count),
-      lastSeen: strOrEmpty(edge.lastSeen ?? edge.last_seen),
-      averageTravelSeconds: numOrZero(edge.averageTravelSeconds ?? edge.average_travel_seconds),
-    })),
-  }
-}
+export const fetchFootfall = async (
+  days?: number,
+  date_from?: Date,
+  date_to?: Date
+): Promise<FootfallBucket[]> => {
+  const params = new URLSearchParams()
 
-export const fetchFootfall = async (days?: number): Promise<FootfallBucket[]> => {
-  const qs =
-    days !== undefined
-      ? `?days=${encodeURIComponent(String(days))}`
-      : ''
+  if (days !== undefined) {
+    params.append('days', String(days))
+  }
+
+  if (date_from !== undefined) {
+    params.append('date_from', date_from.toISOString())
+  }
+
+  if (date_to !== undefined) {
+    params.append('date_to', date_to.toISOString())
+  }
+
+  const qs = params.toString() ? `?${params.toString()}` : ''
   const response = await fetch(apiUrl(`/api/analytics/footfall${qs}`))
   const raw = await handleResponse<any>(response)
   try {
@@ -902,26 +808,6 @@ export const fetchFootfall = async (days?: number): Promise<FootfallBucket[]> =>
   }
 }
 
-export const fetchAgeDistribution = async (): Promise<DemographicSlice[]> => {
-  const response = await fetch(apiUrl('/api/analytics/age-distribution'))
-  const raw = await handleResponse<any>(response)
-  try {
-    const arr = Array.isArray(raw) ? raw : raw?.distribution ?? raw?.slices ?? []
-    return arr
-      .map((item: any) => {
-        try {
-          return adaptDemographicSlice(item)
-        } catch (e) {
-          console.error('adaptDemographicSlice failed:', e)
-          return null
-        }
-      })
-      .filter(Boolean) as DemographicSlice[]
-  } catch (e) {
-    console.error('fetchAgeDistribution adapter failed:', e)
-    return []
-  }
-}
 
 export const fetchGenderDistribution = async (): Promise<DemographicSlice[]> => {
   const response = await fetch(apiUrl('/api/analytics/gender-distribution'))
@@ -1036,7 +922,7 @@ export const runForensicSearch = async (
   }
   if (payload.wearingMask) formData.append('wearing_mask', 'true')
   if (payload.wearingGlasses) formData.append('wearing_glasses', 'true')
-  const response = await fetch(forensicApiUrl('/api/forensic/search'), {
+  const response = await fetch(apiUrl('/api/forensic/search'), {
     method: 'POST',
     body: formData,
   })
@@ -1059,170 +945,324 @@ export const runForensicSearch = async (
   }
 }
 
-// ==================== System & Versioning APIs ====================
+// ==================== Camera Configuration ====================
 
-export async function fetchVersionBundle(): Promise<VersionBundle> {
-  const res = await fetch(apiUrl('/api/system/version-bundle'))
-  const raw = await handleResponse<any>(res)
-  const comps = raw.components || {}
-  return {
-    detectionModelVersion: strOrEmpty(raw.detection_model_version ?? comps.detection_model),
-    embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? comps.embedding_model),
-    galleryVersion: numOrZero(raw.gallery_version ?? comps.gallery_version),
-    thresholdVersion: numOrZero(raw.threshold_version ?? comps.threshold_version),
-    cameraConfigVersion: numOrZero(raw.camera_config_version ?? comps.camera_config_version),
-    algorithmVersion: strOrEmpty(raw.algorithm_version ?? comps.algorithm_version),
-    versionBundleHash: strOrEmpty(raw.version_bundle_hash ?? raw.bundle_hash),
-    isProductionReady: boolOrFalse(raw.is_production_ready ?? true),
-    createdAt: strOrEmpty(raw.created_at),
-  }
-}
-
-export async function fetchNodeHealth(): Promise<NodeHealthReport[]> {
-  const res = await fetch(apiUrl('/api/nodes/health'))
-  const raw = await handleResponse<any>(res)
-  const nodes = Array.isArray(raw) ? raw : (raw.nodes || [])
-  return nodes.map((n: any) => {
-    const m = n.metrics || {}
+export const fetchCameraConfig = async (cameraId: string): Promise<CameraConfigProfile> => {
+  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`))
+  const raw = await handleResponse<any>(response)
+  try {
     return {
-      nodeId: strOrEmpty(n.node_id ?? n.nodeId ?? n.device_id),
-      hostname: n.hostname ? strOrEmpty(n.hostname) : undefined,
-      status: strOrEmpty(n.status || 'ONLINE'),
-      cpuPercent: numOrZero(n.cpu_percent ?? m.cpu_percent),
-      gpuPercent: numOrZero(n.gpu_percent ?? m.gpu_percent),
-      memoryPercent: numOrZero(n.memory_percent ?? m.memory_percent),
-      temperatureC: n.temperature_c !== undefined && n.temperature_c !== null ? numOrZero(n.temperature_c) : (m.temperature_c !== undefined ? numOrZero(m.temperature_c) : undefined),
-      diskUsagePercent: numOrZero(n.disk_usage_percent ?? m.disk_usage_percent),
-      diskFreeMb: numOrZero(n.disk_free_mb ?? m.disk_free_mb),
-      cameraFps: numOrZero(n.camera_fps ?? m.camera_fps),
-      inferenceFps: numOrZero(n.inference_fps ?? m.inference_fps),
-      networkLatencyMs: numOrZero(n.network_latency_ms ?? m.network_latency_ms),
-      syncQueueLength: numOrZero(n.sync_queue_length ?? m.sync_queue_length),
-      eventBacklog: numOrZero(n.event_backlog ?? m.event_backlog),
-      recognitionLatencyMs: numOrZero(n.recognition_latency_ms ?? m.recognition_latency_ms),
-      runtimeMode: strOrEmpty(n.runtime_mode ?? n.mode ?? 'NORMAL'),
-      frameSamplingRate: numOrZero(n.frame_sampling_rate ?? m.frame_sampling_rate ?? 1.0),
-      syncBatchSize: numOrZero(n.sync_batch_size ?? m.sync_batch_size ?? 50),
-      syncIntervalSeconds: numOrZero(n.sync_interval_seconds ?? m.sync_interval_seconds ?? 1.0),
-      reportedAt: strOrEmpty(n.reported_at ?? n.last_heartbeat),
+      id: strOrEmpty(raw.id),
+      cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
+      version: numOrZero(raw.version),
+      detectionThreshold: numOrZero(raw.detection_threshold ?? raw.detectionThreshold),
+      recognitionThreshold: numOrZero(raw.recognition_threshold ?? raw.recognitionThreshold),
+      qualityThreshold: numOrZero(raw.quality_threshold ?? raw.qualityThreshold),
+      samplingRate: numOrZero(raw.sampling_rate ?? raw.samplingRate),
+      temporalWindow: numOrZero(raw.temporal_window ?? raw.temporalWindow),
+      isActive: boolOrFalse(raw.is_active ?? raw.isActive),
+      createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
+      updatedAt: strOrEmpty(raw.updated_at ?? raw.updatedAt) || undefined,
     }
+  } catch (e) {
+    console.error('fetchCameraConfig adapt failed:', e)
+    throw e
+  }
+}
+
+export const saveCameraConfig = async (config: CameraConfigProfile): Promise<CameraConfigProfile> => {
+  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(config.cameraId)}/config`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      detectionThreshold: config.detectionThreshold,
+      recognitionThreshold: config.recognitionThreshold,
+      qualityThreshold: config.qualityThreshold,
+      samplingRate: config.samplingRate,
+      temporalWindow: config.temporalWindow,
+      isActive: config.isActive,
+    }),
   })
-}
-
-export async function fetchProvenance(eventId: string): Promise<RecognitionProvenance> {
-  const res = await fetch(apiUrl(`/api/detections/${encodeURIComponent(eventId)}/provenance`))
-  const raw = await handleResponse<any>(res)
-  return {
-    eventId: strOrEmpty(raw.event_id),
-    detectionId: raw.detection_id ? strOrEmpty(raw.detection_id) : undefined,
-    cameraId: strOrEmpty(raw.camera_id),
-    frameReference: strOrEmpty(raw.frame_reference),
-    trackId: strOrEmpty(raw.track_id) || 'untracked',
-    observationCount: numOrZero(raw.observation_count) || (Array.isArray(raw.observation_references) ? raw.observation_references.length : 0),
-    observationReferences: Array.isArray(raw.observation_references) ? raw.observation_references : [],
-    detectionModelVersion: strOrEmpty(raw.detection_model_version),
-    embeddingModelVersion: strOrEmpty(raw.embedding_model_version),
-    embeddingFingerprint: strOrEmpty(raw.embedding_fingerprint),
-    candidateMatches: Array.isArray(raw.candidate_matches)
-      ? raw.candidate_matches.map((c: any) => ({
-          identity: strOrEmpty(c.identity),
-          similarity: numOrZero(c.similarity ?? c.score),
-          rank: numOrZero(c.rank),
-        }))
-      : [],
-    selectedIdentity: strOrEmpty(raw.selected_identity),
-    confidence: numOrZero(raw.confidence),
-    decisionTier: strOrEmpty(raw.decision_tier),
-    cameraConfigVersion: numOrZero(raw.camera_config_version),
-    cloudRecordId: raw.cloud_record_id ? strOrEmpty(raw.cloud_record_id) : undefined,
-    decisionTimestamp: strOrEmpty(raw.decision_timestamp),
-    provenanceChainHash: strOrEmpty(raw.provenance_chain_hash),
-    stages: Array.isArray(raw.stages)
-      ? raw.stages.map((s: any) => ({
-          stage: strOrEmpty(s.stage),
-          timestamp: strOrEmpty(s.timestamp),
-          metadata: s.metadata || {},
-        }))
-      : [],
+  const raw = await handleResponse<any>(response)
+  try {
+    return {
+      id: strOrEmpty(raw.id),
+      cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
+      version: numOrZero(raw.version),
+      detectionThreshold: numOrZero(raw.detection_threshold ?? raw.detectionThreshold),
+      recognitionThreshold: numOrZero(raw.recognition_threshold ?? raw.recognitionThreshold),
+      qualityThreshold: numOrZero(raw.quality_threshold ?? raw.qualityThreshold),
+      samplingRate: numOrZero(raw.sampling_rate ?? raw.samplingRate),
+      temporalWindow: numOrZero(raw.temporal_window ?? raw.temporalWindow),
+      isActive: boolOrFalse(raw.is_active ?? raw.isActive),
+      createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
+      updatedAt: strOrEmpty(raw.updated_at ?? raw.updatedAt) || undefined,
+    }
+  } catch (e) {
+    console.error('saveCameraConfig adapt failed:', e)
+    throw e
   }
 }
 
-export async function fetchCameraConfig(cameraId: string): Promise<CameraConfigProfile> {
-  const res = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`))
-  const raw = await handleResponse<any>(res)
-  return {
-    id: strOrEmpty(raw.id),
-    cameraId: strOrEmpty(raw.camera_id),
-    version: numOrZero(raw.version),
-    detectionThreshold: numOrZero(raw.detection_threshold),
-    recognitionThreshold: numOrZero(raw.recognition_threshold),
-    qualityThreshold: numOrZero(raw.quality_threshold),
-    samplingRate: numOrZero(raw.sampling_rate),
-    temporalWindow: numOrZero(raw.temporal_window),
-    isActive: boolOrFalse(raw.is_active),
-    createdAt: strOrEmpty(raw.created_at),
-    updatedAt: raw.updated_at ? strOrEmpty(raw.updated_at) : undefined,
-  }
-}
-
-export async function saveCameraConfig(
-  cameraId: string,
-  config: Partial<CameraConfigProfile>,
-): Promise<CameraConfigProfile> {
-  const payload: Record<string, any> = {}
-  if (config.detectionThreshold !== undefined) payload.detection_threshold = config.detectionThreshold
-  if (config.recognitionThreshold !== undefined) payload.recognition_threshold = config.recognitionThreshold
-  if (config.qualityThreshold !== undefined) payload.quality_threshold = config.qualityThreshold
-  if (config.samplingRate !== undefined) payload.sampling_rate = config.samplingRate
-  if (config.temporalWindow !== undefined) payload.temporal_window = config.temporalWindow
-
-  const res = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`), {
+export const rollbackCameraConfig = async (cameraId: string, version: number): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config/rollback`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ version }),
   })
-  const raw = await handleResponse<any>(res)
-  return {
-    id: strOrEmpty(raw.id),
-    cameraId: strOrEmpty(raw.camera_id),
-    version: numOrZero(raw.version),
-    detectionThreshold: numOrZero(raw.detection_threshold),
-    recognitionThreshold: numOrZero(raw.recognition_threshold),
-    qualityThreshold: numOrZero(raw.quality_threshold),
-    samplingRate: numOrZero(raw.sampling_rate),
-    temporalWindow: numOrZero(raw.temporal_window),
-    isActive: boolOrFalse(raw.is_active),
-    createdAt: strOrEmpty(raw.created_at),
-    updatedAt: raw.updated_at ? strOrEmpty(raw.updated_at) : undefined,
+  await handleResponse<any>(response)
+}
+
+// ==================== Lineage & Provenance ====================
+
+export const fetchProvenance = async (eventId: string): Promise<RecognitionProvenance> => {
+  const response = await fetch(apiUrl(`/api/provenance/${encodeURIComponent(eventId)}`))
+  const raw = await handleResponse<any>(response)
+  try {
+    // Simplified adaptation - in reality this would be more complex
+    return {
+      eventId: strOrEmpty(raw.event_id ?? raw.eventId),
+      detectionId: strOrEmpty(raw.detection_id ?? raw.detectionId) || undefined,
+      cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
+      frameReference: strOrEmpty(raw.frame_reference ?? raw.frameReference),
+      trackId: strOrEmpty(raw.track_id ?? raw.trackId),
+      observationCount: numOrZero(raw.observation_count ?? raw.observationCount),
+      observationReferences: Array.isArray(raw.observation_references ?? raw.observationReferences)
+        ? (raw.observation_references ?? raw.observationReferences)
+        : [],
+      detectionModelVersion: strOrEmpty(raw.detection_model_version ?? raw.detectionModelVersion),
+      embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? raw.embeddingModelVersion),
+      embeddingFingerprint: strOrEmpty(raw.embedding_fingerprint ?? raw.embeddingFingerprint),
+      candidateMatches: Array.isArray(raw.candidate_matches ?? raw.candidateMatches)
+        ? (raw.candidate_matches ?? raw.candidateMatches).map((match: any) => ({
+            identity: strOrEmpty(match.identity),
+            similarity: numOrZero(match.similarity),
+            rank: numOrZero(match.rank),
+          }))
+        : [],
+      selectedIdentity: strOrEmpty(raw.selected_identity ?? raw.selectedIdentity),
+      confidence: numOrZero(raw.confidence),
+      decisionTier: strOrEmpty(raw.decision_tier ?? raw.decisionTier),
+      cameraConfigVersion: numOrZero(raw.camera_config_version ?? raw.cameraConfigVersion),
+      cloudRecordId: strOrEmpty(raw.cloud_record_id ?? raw.cloudRecordId) || undefined,
+      decisionTimestamp: strOrEmpty(raw.decision_timestamp ?? raw.decisionTimestamp),
+      provenanceChainHash: strOrEmpty(raw.provenance_chain_hash ?? raw.provenanceChainHash),
+      stages: Array.isArray(raw.stages)
+        ? raw.stages.map((stage: any) => ({
+            stage: strOrEmpty(stage.stage),
+            timestamp: strOrEmpty(stage.timestamp),
+            metadata: stage.metadata || {},
+          }))
+        : [],
+    }
+  } catch (e) {
+    console.error('fetchProvenance adapt failed:', e)
+    throw e
   }
 }
 
-export async function rollbackCameraConfig(
-  cameraId: string,
-  version?: number,
-): Promise<CameraConfigProfile> {
-  const endpoint = version !== undefined
-    ? `/api/cameras/${encodeURIComponent(cameraId)}/config/rollback/${version}`
-    : `/api/cameras/${encodeURIComponent(cameraId)}/config/rollback`
-  const res = await fetch(apiUrl(endpoint), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target_version: version }),
-  })
-  const raw = await handleResponse<any>(res)
+// ==================== Unregistered Subjects ====================
+
+export function adaptUnregisteredSubject(raw: any): UnregisteredSubject {
   return {
     id: strOrEmpty(raw.id),
-    cameraId: strOrEmpty(raw.camera_id),
-    version: numOrZero(raw.version),
-    detectionThreshold: numOrZero(raw.detection_threshold),
-    recognitionThreshold: numOrZero(raw.recognition_threshold),
-    qualityThreshold: numOrZero(raw.quality_threshold),
-    samplingRate: numOrZero(raw.sampling_rate),
-    temporalWindow: numOrZero(raw.temporal_window),
-    isActive: boolOrFalse(raw.is_active),
-    createdAt: strOrEmpty(raw.created_at),
-    updatedAt: raw.updated_at ? strOrEmpty(raw.updated_at) : undefined,
+    displayName: strOrEmpty(raw.displayName ?? raw.name ?? ''),
+    captureCount: numOrZero(raw.captureCount),
+    firstSeen: strOrEmpty(raw.firstSeen),
+    lastSeen: strOrEmpty(raw.lastSeen),
+    cameras: Array.isArray(raw.cameras) ? raw.cameras : typeof raw.cameras === 'string' ? [raw.cameras] : [],
+    bestConfidence: numOrZero(raw.bestConfidence),
+    representativeFingerprint: strOrEmpty(raw.representativeFingerprint ?? raw.fingerprint ?? ''),
+    vectorDimension: numOrZero(raw.vectorDimension),
+    eventIds: Array.isArray(raw.eventIds) ? raw.eventIds : [],
+    status: strOrEmpty(raw.status ?? 'unknown'),
+  };
+}
+
+export const fetchUnregisteredSubjects = async (): Promise<UnregisteredSubject[]> => {
+  const response = await fetch(apiUrl('/api/unregistered-subjects'))
+  const raw = await handleResponse<any>(response)
+  try {
+    const arr = Array.isArray(raw) ? raw : [] // maybe raw?.unregisteredSubjects ?? []
+    return arr.map((item: any) => {
+      try {
+        return adaptUnregisteredSubject(item)
+      } catch (e) {
+        console.error('adaptUnregisteredSubject failed:', e)
+        return null
+      }
+    }).filter(Boolean) as UnregisteredSubject[]
+  } catch (e) {
+    console.error('fetchUnregisteredSubjects adapter failed:', e)
+    return []
   }
+}
+
+export const assignUnregisteredSubject = async (id: string, profileId: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/assign`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profileId }),
+  })
+  await handleResponse<any>(response)
+}
+
+export const deleteUnregisteredEvent = async (subjectId: string, eventId: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}/events/${encodeURIComponent(eventId)}`), {
+    method: 'DELETE',
+  })
+  await handleResponse<any>(response)
+}
+
+export const deleteUnregisteredSubject = async (id: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+  })
+  await handleResponse<any>(response)
+}
+
+export const mergeUnregisteredSubjects = async (id: string, sourceId: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/merge`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceId }),
+  })
+  await handleResponse<any>(response)
+}
+
+export const registerUnregisteredSubject = async (id: string, { name, role }: { name: string; role: ProfileRole }): Promise<void> => {
+  const formData = new FormData()
+  formData.append('id', id)
+  formData.append('name', name)
+  formData.append('role', role)
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/register`), {
+    method: 'POST',
+    body: formData,
+  })
+  await handleResponse<any>(response)
+}
+
+export const renameUnregisteredSubject = async (id: string, name: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/rename`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  await handleResponse<any>(response)
+}
+
+// ==================== System ====================
+
+export const fetchMovementNetwork = async (): Promise<MovementNetwork> => {
+  const response = await fetch(apiUrl('/api/analytics/movement-network'))
+  const raw = await handleResponse<any>(response)
+  try {
+    const edges = Array.isArray(raw?.edges) ? raw.edges : []
+    return {
+      edges: edges.map((edge: any) => ({
+        fromCameraId: strOrEmpty(edge.from_camera_id ?? edge.fromCameraId),
+        fromCameraName: strOrEmpty(edge.from_camera_name ?? edge.fromCameraName),
+        toCameraId: strOrEmpty(edge.to_camera_id ?? edge.toCameraId),
+        toCameraName: strOrEmpty(edge.to_camera_name ?? edge.toCameraName),
+        count: numOrZero(edge.count),
+        lastSeen: strOrEmpty(edge.last_seen ?? edge.lastSeen),
+        averageTravelSeconds: numOrZero(edge.average_travel_seconds ?? edge.averageTravelSeconds),
+      }))
+    }
+  } catch (e) {
+    console.error('fetchMovementNetwork adapt failed:', e)
+    throw e
+  }
+}
+
+export const fetchNodeHealth = async (): Promise<NodeHealthReport[]> => {
+  const response = await fetch(apiUrl('/api/nodes/health'))
+  const raw = await handleResponse<any>(response)
+  try {
+    const arr = Array.isArray(raw) ? raw : raw?.nodes ?? []
+    return arr
+      .map((item: any) => {
+        try {
+          return {
+            nodeId: strOrEmpty(item.node_id ?? item.nodeId),
+            hostname: strOrEmpty(item.hostname) || undefined,
+            status: strOrEmpty(item.status),
+            cpuPercent: numOrZero(item.cpu_percent ?? item.cpuPercent),
+            gpuPercent: numOrZero(item.gpu_percent ?? item.gpuPercent),
+            memoryPercent: numOrZero(item.memory_percent ?? item.memoryPercent),
+            temperatureC: numOrZero(item.temperature_c ?? item.temperatureC) || undefined,
+            diskUsagePercent: numOrZero(item.disk_usage_percent ?? item.diskUsagePercent),
+            diskFreeMb: numOrZero(item.disk_free_mb ?? item.diskFreeMb),
+            cameraFps: numOrZero(item.camera_fps ?? item.cameraFps),
+            inferenceFps: numOrZero(item.inference_fps ?? item.inferenceFps),
+            networkLatencyMs: numOrZero(item.network_latency_ms ?? item.networkLatencyMs),
+            syncQueueLength: numOrZero(item.sync_queue_length ?? item.syncQueueLength),
+            eventBacklog: numOrZero(item.event_backlog ?? item.eventBacklog),
+            recognitionLatencyMs: numOrZero(item.recognition_latency_ms ?? item.recognitionLatencyMs),
+            runtimeMode: strOrEmpty(item.runtime_mode ?? item.runtimeMode),
+            frameSamplingRate: numOrZero(item.frame_sampling_rate ?? item.frameSamplingRate),
+            syncBatchSize: numOrZero(item.sync_batch_size ?? item.syncBatchSize),
+            syncIntervalSeconds: numOrZero(item.sync_interval_seconds ?? item.syncIntervalSeconds),
+            reportedAt: strOrEmpty(item.reported_at ?? item.reportedAt),
+          }
+        } catch (e) {
+          console.error('adaptNodeHealth failed:', e)
+          return null
+        }
+      })
+      .filter(Boolean) as NodeHealthReport[]
+  } catch (e) {
+    console.error('fetchNodeHealth adapter failed:', e)
+    return []
+  }
+}
+
+// ==================== System Info ====================
+
+export const fetchVersionBundle = async (): Promise<VersionBundle> => {
+  const response = await fetch(apiUrl('/api/version'))
+  const raw = await handleResponse<any>(response)
+  try {
+    return {
+      detectionModelVersion: strOrEmpty(raw.detection_model_version ?? raw.detectionModelVersion),
+      embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? raw.embeddingModelVersion),
+      galleryVersion: numOrZero(raw.gallery_version ?? raw.galleryVersion),
+      thresholdVersion: numOrZero(raw.threshold_version ?? raw.thresholdVersion),
+      cameraConfigVersion: numOrZero(raw.camera_config_version ?? raw.cameraConfigVersion),
+      algorithmVersion: strOrEmpty(raw.algorithm_version ?? raw.algorithmVersion),
+      versionBundleHash: strOrEmpty(raw.version_bundle_hash ?? raw.versionBundleHash),
+      isProductionReady: boolOrFalse(raw.is_production_ready ?? raw.isProductionReady),
+      createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
+    }
+  } catch (e) {
+    console.error('fetchVersionBundle adapt failed:', e)
+    throw e
+  }
+}
+
+// ==================== Profiles (additional) ====================
+
+export const deleteProfile = async (profileId: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
+    method: 'DELETE',
+  })
+  await handleResponse<any>(response)
+}
+
+export const deleteProfileEmbeddings = async (profileId: string): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}/embeddings`), {
+    method: 'DELETE',
+  })
+  await handleResponse<any>(response)
+}
+
+export const updateProfile = async (profileId: string, { name, role, department }: { name: string; role: ProfileRole; department: string }): Promise<void> => {
+  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, role, department }),
+  })
+  await handleResponse<any>(response)
 }
 
 // ==================== WebSocket Connections ====================
@@ -1232,10 +1272,16 @@ export const connectAlertsWebSocket = (
 ): WebSocket => {
   const ws = new WebSocket(wsUrl('alerts'))
   ws.onmessage = (event) => {
-    const message = JSON.parse(event.data)
-    onMessage(message.data)
+    try {
+      const message = JSON.parse(event.data)
+      onMessage(message.data)
+    } catch (parseError) {
+      console.error('WebSocket message parse error (alerts):', parseError)
+    }
   }
-  ws.onerror = () => console.warn(`WebSocket unavailable: ${wsUrl('alerts')}`)
+  ws.onerror = (error) => {
+    console.error('WebSocket error (alerts):', error)
+  }
   return ws
 }
 
@@ -1244,10 +1290,16 @@ export const connectCamerasWebSocket = (
 ): WebSocket => {
   const ws = new WebSocket(wsUrl('cameras'))
   ws.onmessage = (event) => {
-    const message = JSON.parse(event.data)
-    onMessage(message.data)
+    try {
+      const message = JSON.parse(event.data)
+      onMessage(message.data)
+    } catch (parseError) {
+      console.error('WebSocket message parse error (cameras):', parseError)
+    }
   }
-  ws.onerror = () => console.warn(`WebSocket unavailable: ${wsUrl('cameras')}`)
+  ws.onerror = (error) => {
+    console.error('WebSocket error (cameras):', error)
+  }
   return ws
 }
 
@@ -1256,12 +1308,17 @@ export const connectKpisWebSocket = (
 ): WebSocket => {
   const ws = new WebSocket(wsUrl('kpis'))
   ws.onmessage = (event) => {
-    const message = JSON.parse(event.data)
-    onMessage(message.data)
+    try {
+      const message = JSON.parse(event.data)
+      onMessage(message.data)
+    } catch (parseError) {
+      console.error('WebSocket message parse error (kpis):', parseError)
+    }
   }
-  ws.onerror = () => console.warn(`WebSocket unavailable: ${wsUrl('kpis')}`)
+  ws.onerror = (error) => {
+    console.error('WebSocket error (kpis):', error)
+  }
   return ws
 }
 
 export { API_URL, WS_URL }
-

@@ -2219,16 +2219,44 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
     )
 
 @app.get("/api/analytics/footfall", response_model=list[FootfallBucketResponse])
-def get_footfall(days: int = Query(7), db: Session = Depends(get_db)):
-    start_time = datetime.now(timezone.utc) - timedelta(days=days)
-    
+def get_footfall(
+    days: int = Query(7, description="Number of days to look back from today (used if date_from/date_to not provided)"),
+    date_from: Optional[datetime] = Query(None, description="Start date (inclusive) in UTC"),
+    date_to: Optional[datetime] = Query(None, description="End date (inclusive) in UTC"),
+    db: Session = Depends(get_db)
+):
+    # Determine the time range to filter by
+    if date_from is not None or date_to is not None:
+        # Use explicit date range if provided
+        if date_from is not None:
+            start_time = date_from
+        else:
+            # If only date_to is provided, default to 7 days before date_to
+            start_time = date_to - timedelta(days=7)
+
+        if date_to is not None:
+            end_time = date_to
+        else:
+            # If only date_from is provided, default to 7 days after date_from
+            end_time = date_from + timedelta(days=7)
+
+        # Adjust end_time to be the end of the day (23:59:59.999999)
+        end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+    else:
+        # Fall back to original behavior for backward compatibility
+        start_time = datetime.now(timezone.utc) - timedelta(days=days)
+        end_time = datetime.now(timezone.utc)
+
     results = db.query(
         extract('hour', Detection.timestamp).label('hour'),
         func.count(Detection.id).label('total'),
         func.sum(case((Detection.status == DetectionStatusEnum.recognized, 1), else_=0)).label('recognized'),
         func.sum(case((Detection.status == DetectionStatusEnum.unknown, 1), else_=0)).label('unknown')
-    ).filter(Detection.timestamp >= start_time).group_by(extract('hour', Detection.timestamp)).all()
-    
+    ).filter(
+        Detection.timestamp >= start_time,
+        Detection.timestamp <= end_time
+    ).group_by(extract('hour', Detection.timestamp)).all()
+
     buckets = {}
     for r in results:
         hour_str = f"{int(r.hour):02d}:00"
@@ -2238,7 +2266,7 @@ def get_footfall(days: int = Query(7), db: Session = Depends(get_db)):
             recognized=r.recognized or 0,
             unknown=r.unknown or 0
         )
-        
+
     final_res = []
     for i in range(24):
         hour_str = f"{i:02d}:00"
