@@ -50,7 +50,7 @@ export function Dashboard() {
             })
           }
         } catch (e) {
-          console.error('Failed to adapt websocket payload', e)
+          console.error('WebSocket adaptation error:', e)
         }
         queryClient.invalidateQueries({ queryKey: ['alerts'] })
       } else {

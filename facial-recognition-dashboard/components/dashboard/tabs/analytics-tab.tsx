@@ -114,12 +114,11 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
         const sortedDates = [...selectedDates].sort((a, b) => a.getTime() - b.getTime())
         date_from = sortedDates[0]
         date_to = sortedDates[sortedDates.length - 1]
-      ]
 
-        # Set to start of day (00:00:00) for date_from
+        // Set to start of day (00:00:00) for date_from
         date_from = new Date(date_from.getFullYear(), date_from.getMonth(), date_from.getDate())
 
-        # Set to end of day (23:59:59.999999) for date_to
+        // Set to end of day (23:59:59.999999) for date_to
         date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999999)
       }
 

@@ -14,7 +14,6 @@ import type {
   Alert,
   AttendanceRecord,
   Camera,
-  CameraConfigProfile,
   DemographicSlice,
   DuplicateCandidate,
   FaceLog,
@@ -22,21 +21,13 @@ import type {
   ForensicMatch,
   Gender,
   ModelThresholds,
-  MovementEdge,
-  MovementNetwork,
-  NodeHealthReport,
   Profile,
   ProfileRole,
-  ProvenanceCandidate,
-  ProvenanceStage,
-  RecognitionProvenance,
   SubjectTrajectory,
   SystemKpis,
   SystemHealth,
   TrajectoryNode,
   UnknownCapture,
-  UnregisteredSubject,
-  VersionBundle,
 } from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -768,26 +759,11 @@ export const fetchTrajectory = async (
   }
 }
 
-export const fetchFootfall = async (
-  days?: number,
-  date_from?: Date,
-  date_to?: Date
-): Promise<FootfallBucket[]> => {
-  const params = new URLSearchParams()
-
-  if (days !== undefined) {
-    params.append('days', String(days))
-  }
-
-  if (date_from !== undefined) {
-    params.append('date_from', date_from.toISOString())
-  }
-
-  if (date_to !== undefined) {
-    params.append('date_to', date_to.toISOString())
-  }
-
-  const qs = params.toString() ? `?${params.toString()}` : ''
+export const fetchFootfall = async (days?: number): Promise<FootfallBucket[]> => {
+  const qs =
+    days !== undefined
+      ? `?days=${encodeURIComponent(String(days))}`
+      : ''
   const response = await fetch(apiUrl(`/api/analytics/footfall${qs}`))
   const raw = await handleResponse<any>(response)
   try {
@@ -945,326 +921,6 @@ export const runForensicSearch = async (
   }
 }
 
-// ==================== Camera Configuration ====================
-
-export const fetchCameraConfig = async (cameraId: string): Promise<CameraConfigProfile> => {
-  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`))
-  const raw = await handleResponse<any>(response)
-  try {
-    return {
-      id: strOrEmpty(raw.id),
-      cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
-      version: numOrZero(raw.version),
-      detectionThreshold: numOrZero(raw.detection_threshold ?? raw.detectionThreshold),
-      recognitionThreshold: numOrZero(raw.recognition_threshold ?? raw.recognitionThreshold),
-      qualityThreshold: numOrZero(raw.quality_threshold ?? raw.qualityThreshold),
-      samplingRate: numOrZero(raw.sampling_rate ?? raw.samplingRate),
-      temporalWindow: numOrZero(raw.temporal_window ?? raw.temporalWindow),
-      isActive: boolOrFalse(raw.is_active ?? raw.isActive),
-      createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
-      updatedAt: strOrEmpty(raw.updated_at ?? raw.updatedAt) || undefined,
-    }
-  } catch (e) {
-    console.error('fetchCameraConfig adapt failed:', e)
-    throw e
-  }
-}
-
-export const saveCameraConfig = async (config: CameraConfigProfile): Promise<CameraConfigProfile> => {
-  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(config.cameraId)}/config`), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      detectionThreshold: config.detectionThreshold,
-      recognitionThreshold: config.recognitionThreshold,
-      qualityThreshold: config.qualityThreshold,
-      samplingRate: config.samplingRate,
-      temporalWindow: config.temporalWindow,
-      isActive: config.isActive,
-    }),
-  })
-  const raw = await handleResponse<any>(response)
-  try {
-    return {
-      id: strOrEmpty(raw.id),
-      cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
-      version: numOrZero(raw.version),
-      detectionThreshold: numOrZero(raw.detection_threshold ?? raw.detectionThreshold),
-      recognitionThreshold: numOrZero(raw.recognition_threshold ?? raw.recognitionThreshold),
-      qualityThreshold: numOrZero(raw.quality_threshold ?? raw.qualityThreshold),
-      samplingRate: numOrZero(raw.sampling_rate ?? raw.samplingRate),
-      temporalWindow: numOrZero(raw.temporal_window ?? raw.temporalWindow),
-      isActive: boolOrFalse(raw.is_active ?? raw.isActive),
-      createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
-      updatedAt: strOrEmpty(raw.updated_at ?? raw.updatedAt) || undefined,
-    }
-  } catch (e) {
-    console.error('saveCameraConfig adapt failed:', e)
-    throw e
-  }
-}
-
-export const rollbackCameraConfig = async (cameraId: string, version: number): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config/rollback`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version }),
-  })
-  await handleResponse<any>(response)
-}
-
-// ==================== Lineage & Provenance ====================
-
-export const fetchProvenance = async (eventId: string): Promise<RecognitionProvenance> => {
-  const response = await fetch(apiUrl(`/api/provenance/${encodeURIComponent(eventId)}`))
-  const raw = await handleResponse<any>(response)
-  try {
-    // Simplified adaptation - in reality this would be more complex
-    return {
-      eventId: strOrEmpty(raw.event_id ?? raw.eventId),
-      detectionId: strOrEmpty(raw.detection_id ?? raw.detectionId) || undefined,
-      cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
-      frameReference: strOrEmpty(raw.frame_reference ?? raw.frameReference),
-      trackId: strOrEmpty(raw.track_id ?? raw.trackId),
-      observationCount: numOrZero(raw.observation_count ?? raw.observationCount),
-      observationReferences: Array.isArray(raw.observation_references ?? raw.observationReferences)
-        ? (raw.observation_references ?? raw.observationReferences)
-        : [],
-      detectionModelVersion: strOrEmpty(raw.detection_model_version ?? raw.detectionModelVersion),
-      embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? raw.embeddingModelVersion),
-      embeddingFingerprint: strOrEmpty(raw.embedding_fingerprint ?? raw.embeddingFingerprint),
-      candidateMatches: Array.isArray(raw.candidate_matches ?? raw.candidateMatches)
-        ? (raw.candidate_matches ?? raw.candidateMatches).map((match: any) => ({
-            identity: strOrEmpty(match.identity),
-            similarity: numOrZero(match.similarity),
-            rank: numOrZero(match.rank),
-          }))
-        : [],
-      selectedIdentity: strOrEmpty(raw.selected_identity ?? raw.selectedIdentity),
-      confidence: numOrZero(raw.confidence),
-      decisionTier: strOrEmpty(raw.decision_tier ?? raw.decisionTier),
-      cameraConfigVersion: numOrZero(raw.camera_config_version ?? raw.cameraConfigVersion),
-      cloudRecordId: strOrEmpty(raw.cloud_record_id ?? raw.cloudRecordId) || undefined,
-      decisionTimestamp: strOrEmpty(raw.decision_timestamp ?? raw.decisionTimestamp),
-      provenanceChainHash: strOrEmpty(raw.provenance_chain_hash ?? raw.provenanceChainHash),
-      stages: Array.isArray(raw.stages)
-        ? raw.stages.map((stage: any) => ({
-            stage: strOrEmpty(stage.stage),
-            timestamp: strOrEmpty(stage.timestamp),
-            metadata: stage.metadata || {},
-          }))
-        : [],
-    }
-  } catch (e) {
-    console.error('fetchProvenance adapt failed:', e)
-    throw e
-  }
-}
-
-// ==================== Unregistered Subjects ====================
-
-export function adaptUnregisteredSubject(raw: any): UnregisteredSubject {
-  return {
-    id: strOrEmpty(raw.id),
-    displayName: strOrEmpty(raw.displayName ?? raw.name ?? ''),
-    captureCount: numOrZero(raw.captureCount),
-    firstSeen: strOrEmpty(raw.firstSeen),
-    lastSeen: strOrEmpty(raw.lastSeen),
-    cameras: Array.isArray(raw.cameras) ? raw.cameras : typeof raw.cameras === 'string' ? [raw.cameras] : [],
-    bestConfidence: numOrZero(raw.bestConfidence),
-    representativeFingerprint: strOrEmpty(raw.representativeFingerprint ?? raw.fingerprint ?? ''),
-    vectorDimension: numOrZero(raw.vectorDimension),
-    eventIds: Array.isArray(raw.eventIds) ? raw.eventIds : [],
-    status: strOrEmpty(raw.status ?? 'unknown'),
-  };
-}
-
-export const fetchUnregisteredSubjects = async (): Promise<UnregisteredSubject[]> => {
-  const response = await fetch(apiUrl('/api/unregistered-subjects'))
-  const raw = await handleResponse<any>(response)
-  try {
-    const arr = Array.isArray(raw) ? raw : [] // maybe raw?.unregisteredSubjects ?? []
-    return arr.map((item: any) => {
-      try {
-        return adaptUnregisteredSubject(item)
-      } catch (e) {
-        console.error('adaptUnregisteredSubject failed:', e)
-        return null
-      }
-    }).filter(Boolean) as UnregisteredSubject[]
-  } catch (e) {
-    console.error('fetchUnregisteredSubjects adapter failed:', e)
-    return []
-  }
-}
-
-export const assignUnregisteredSubject = async (id: string, profileId: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/assign`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profileId }),
-  })
-  await handleResponse<any>(response)
-}
-
-export const deleteUnregisteredEvent = async (subjectId: string, eventId: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}/events/${encodeURIComponent(eventId)}`), {
-    method: 'DELETE',
-  })
-  await handleResponse<any>(response)
-}
-
-export const deleteUnregisteredSubject = async (id: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}`), {
-    method: 'DELETE',
-  })
-  await handleResponse<any>(response)
-}
-
-export const mergeUnregisteredSubjects = async (id: string, sourceId: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/merge`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sourceId }),
-  })
-  await handleResponse<any>(response)
-}
-
-export const registerUnregisteredSubject = async (id: string, { name, role }: { name: string; role: ProfileRole }): Promise<void> => {
-  const formData = new FormData()
-  formData.append('id', id)
-  formData.append('name', name)
-  formData.append('role', role)
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/register`), {
-    method: 'POST',
-    body: formData,
-  })
-  await handleResponse<any>(response)
-}
-
-export const renameUnregisteredSubject = async (id: string, name: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/unregistered-subjects/${encodeURIComponent(id)}/rename`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  })
-  await handleResponse<any>(response)
-}
-
-// ==================== System ====================
-
-export const fetchMovementNetwork = async (): Promise<MovementNetwork> => {
-  const response = await fetch(apiUrl('/api/analytics/movement-network'))
-  const raw = await handleResponse<any>(response)
-  try {
-    const edges = Array.isArray(raw?.edges) ? raw.edges : []
-    return {
-      edges: edges.map((edge: any) => ({
-        fromCameraId: strOrEmpty(edge.from_camera_id ?? edge.fromCameraId),
-        fromCameraName: strOrEmpty(edge.from_camera_name ?? edge.fromCameraName),
-        toCameraId: strOrEmpty(edge.to_camera_id ?? edge.toCameraId),
-        toCameraName: strOrEmpty(edge.to_camera_name ?? edge.toCameraName),
-        count: numOrZero(edge.count),
-        lastSeen: strOrEmpty(edge.last_seen ?? edge.lastSeen),
-        averageTravelSeconds: numOrZero(edge.average_travel_seconds ?? edge.averageTravelSeconds),
-      }))
-    }
-  } catch (e) {
-    console.error('fetchMovementNetwork adapt failed:', e)
-    throw e
-  }
-}
-
-export const fetchNodeHealth = async (): Promise<NodeHealthReport[]> => {
-  const response = await fetch(apiUrl('/api/nodes/health'))
-  const raw = await handleResponse<any>(response)
-  try {
-    const arr = Array.isArray(raw) ? raw : raw?.nodes ?? []
-    return arr
-      .map((item: any) => {
-        try {
-          return {
-            nodeId: strOrEmpty(item.node_id ?? item.nodeId),
-            hostname: strOrEmpty(item.hostname) || undefined,
-            status: strOrEmpty(item.status),
-            cpuPercent: numOrZero(item.cpu_percent ?? item.cpuPercent),
-            gpuPercent: numOrZero(item.gpu_percent ?? item.gpuPercent),
-            memoryPercent: numOrZero(item.memory_percent ?? item.memoryPercent),
-            temperatureC: numOrZero(item.temperature_c ?? item.temperatureC) || undefined,
-            diskUsagePercent: numOrZero(item.disk_usage_percent ?? item.diskUsagePercent),
-            diskFreeMb: numOrZero(item.disk_free_mb ?? item.diskFreeMb),
-            cameraFps: numOrZero(item.camera_fps ?? item.cameraFps),
-            inferenceFps: numOrZero(item.inference_fps ?? item.inferenceFps),
-            networkLatencyMs: numOrZero(item.network_latency_ms ?? item.networkLatencyMs),
-            syncQueueLength: numOrZero(item.sync_queue_length ?? item.syncQueueLength),
-            eventBacklog: numOrZero(item.event_backlog ?? item.eventBacklog),
-            recognitionLatencyMs: numOrZero(item.recognition_latency_ms ?? item.recognitionLatencyMs),
-            runtimeMode: strOrEmpty(item.runtime_mode ?? item.runtimeMode),
-            frameSamplingRate: numOrZero(item.frame_sampling_rate ?? item.frameSamplingRate),
-            syncBatchSize: numOrZero(item.sync_batch_size ?? item.syncBatchSize),
-            syncIntervalSeconds: numOrZero(item.sync_interval_seconds ?? item.syncIntervalSeconds),
-            reportedAt: strOrEmpty(item.reported_at ?? item.reportedAt),
-          }
-        } catch (e) {
-          console.error('adaptNodeHealth failed:', e)
-          return null
-        }
-      })
-      .filter(Boolean) as NodeHealthReport[]
-  } catch (e) {
-    console.error('fetchNodeHealth adapter failed:', e)
-    return []
-  }
-}
-
-// ==================== System Info ====================
-
-export const fetchVersionBundle = async (): Promise<VersionBundle> => {
-  const response = await fetch(apiUrl('/api/version'))
-  const raw = await handleResponse<any>(response)
-  try {
-    return {
-      detectionModelVersion: strOrEmpty(raw.detection_model_version ?? raw.detectionModelVersion),
-      embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? raw.embeddingModelVersion),
-      galleryVersion: numOrZero(raw.gallery_version ?? raw.galleryVersion),
-      thresholdVersion: numOrZero(raw.threshold_version ?? raw.thresholdVersion),
-      cameraConfigVersion: numOrZero(raw.camera_config_version ?? raw.cameraConfigVersion),
-      algorithmVersion: strOrEmpty(raw.algorithm_version ?? raw.algorithmVersion),
-      versionBundleHash: strOrEmpty(raw.version_bundle_hash ?? raw.versionBundleHash),
-      isProductionReady: boolOrFalse(raw.is_production_ready ?? raw.isProductionReady),
-      createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
-    }
-  } catch (e) {
-    console.error('fetchVersionBundle adapt failed:', e)
-    throw e
-  }
-}
-
-// ==================== Profiles (additional) ====================
-
-export const deleteProfile = async (profileId: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
-    method: 'DELETE',
-  })
-  await handleResponse<any>(response)
-}
-
-export const deleteProfileEmbeddings = async (profileId: string): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}/embeddings`), {
-    method: 'DELETE',
-  })
-  await handleResponse<any>(response)
-}
-
-export const updateProfile = async (profileId: string, { name, role, department }: { name: string; role: ProfileRole; department: string }): Promise<void> => {
-  const response = await fetch(apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, role, department }),
-  })
-  await handleResponse<any>(response)
-}
-
 // ==================== WebSocket Connections ====================
 
 export const connectAlertsWebSocket = (
@@ -1272,16 +928,10 @@ export const connectAlertsWebSocket = (
 ): WebSocket => {
   const ws = new WebSocket(wsUrl('alerts'))
   ws.onmessage = (event) => {
-    try {
-      const message = JSON.parse(event.data)
-      onMessage(message.data)
-    } catch (parseError) {
-      console.error('WebSocket message parse error:', parseError)
-    }
+    const message = JSON.parse(event.data)
+    onMessage(message.data)
   }
-  ws.onerror = (error) => {
-    console.error('WebSocket error:', error)
-  }
+  ws.onerror = (error) => console.error('WebSocket error:', error)
   return ws
 }
 
@@ -1290,16 +940,10 @@ export const connectCamerasWebSocket = (
 ): WebSocket => {
   const ws = new WebSocket(wsUrl('cameras'))
   ws.onmessage = (event) => {
-    try {
-      const message = JSON.parse(event.data)
-      onMessage(message.data)
-    } catch (parseError) {
-      console.error('WebSocket message parse error:', parseError)
-    }
+    const message = JSON.parse(event.data)
+    onMessage(message.data)
   }
-  ws.onerror = (error) => {
-    console.error('WebSocket error:', error)
-  }
+  ws.onerror = (error) => console.error('WebSocket error:', error)
   return ws
 }
 
@@ -1308,16 +952,10 @@ export const connectKpisWebSocket = (
 ): WebSocket => {
   const ws = new WebSocket(wsUrl('kpis'))
   ws.onmessage = (event) => {
-    try {
-      const message = JSON.parse(event.data)
-      onMessage(message.data)
-    } catch (parseError) {
-      console.error('WebSocket message parse error:', parseError)
-    }
+    const message = JSON.parse(event.data)
+    onMessage(message.data)
   }
-  ws.onerror = (error) => {
-    console.error('WebSocket error:', error)
-  }
+  ws.onerror = (error) => console.error('WebSocket error:', error)
   return ws
 }
 
