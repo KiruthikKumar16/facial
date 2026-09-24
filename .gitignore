@@ -39,3 +39,5 @@ pending/
 
 # gstack (global install)
 .amazonq/rules/gstack.md
+
+.claude/
