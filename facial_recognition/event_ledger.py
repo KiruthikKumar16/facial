@@ -15,10 +15,10 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import uuid4
+from backend.config import IST
 
 try:
     from .deterministic_event_id import generate_event_id
@@ -26,7 +26,7 @@ try:
     from .integrity import EventHasher
 except ImportError:
     from deterministic_event_id import generate_event_id
-    from sequence_manager import SequenceManager, SequenceAnomaly, SequenceGap
+    from sequence_manager import SequenceManager
     from integrity import EventHasher
 
 logger = logging.getLogger(__name__)
@@ -248,7 +248,7 @@ class EventLedger:
                 (device_id, last_updated, pending_event_count, synced_event_count, failed_event_count)
                 VALUES (?, ?, 0, 0, 0)
                 """,
-                (self.device_id, datetime.now(timezone.utc).isoformat())
+                (self.device_id, datetime.now(IST).isoformat())
             )
             conn.commit()
         except Exception as e:
@@ -412,10 +412,10 @@ class EventLedger:
         
         # Use provided timestamp (for determinism) or fall back to current time
         if capture_timestamp is None:
-            capture_timestamp = datetime.now(timezone.utc)
+            capture_timestamp = datetime.now(IST)
         elif capture_timestamp.tzinfo is None:
-            # Assume UTC if no timezone
-            capture_timestamp = capture_timestamp.replace(tzinfo=timezone.utc)
+            # Assume IST if no timezone
+            capture_timestamp = capture_timestamp.replace(tzinfo=IST)
         
         # Get next sequence number for this device/camera pair
         sequence = self.sequence_manager.get_next_sequence(self.device_id, camera_id)
@@ -436,7 +436,7 @@ class EventLedger:
             
             # Serialize event payload
             payload_json = json.dumps(event_payload or {})
-            now = datetime.now(timezone.utc)
+            now = datetime.now(IST)
             
             # Start transaction
             cursor.execute("BEGIN IMMEDIATE")
@@ -580,7 +580,7 @@ class EventLedger:
                 ORDER BY q.priority DESC, e.created_at ASC
                 LIMIT ?
                 """,
-                (datetime.now(timezone.utc).isoformat(), limit,)
+                (datetime.now(IST).isoformat(), limit,)
             )
             return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
@@ -608,7 +608,7 @@ class EventLedger:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(IST).isoformat()
             
             cursor.execute("BEGIN IMMEDIATE")
             
@@ -675,7 +675,7 @@ class EventLedger:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(IST).isoformat()
             
             cursor.execute("BEGIN IMMEDIATE")
             
@@ -804,7 +804,7 @@ class EventLedger:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            threshold = (datetime.now(timezone.utc).timestamp() - max_wait_seconds)
+            threshold = (datetime.now(IST).timestamp() - max_wait_seconds)
             # created_at is ISO string. SQLite can compare strings or we just boost based on it.
             # actually we can use strftime
             cursor.execute("BEGIN IMMEDIATE")
@@ -912,7 +912,7 @@ class EventLedger:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(IST).isoformat()
             
             cursor.execute("BEGIN IMMEDIATE")
             
@@ -987,7 +987,7 @@ class EventLedger:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cutoff = datetime.now(timezone.utc)
+            cutoff = datetime.now(IST)
             cutoff = cutoff.replace(
                 day=cutoff.day - days
             )
@@ -1244,7 +1244,7 @@ class EventLedgerMigrator:
                         (
                             csv_file.name,
                             results["total_events"],
-                            datetime.now(timezone.utc).isoformat(),
+                            datetime.now(IST).isoformat(),
                             "success",
                         )
                     )

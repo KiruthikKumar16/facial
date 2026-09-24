@@ -1,8 +1,9 @@
 """WebSocket manager for real-time updates."""
-from typing import Set, List, Dict, Any
+from typing import Set, Dict, Any
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
+from config import IST
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class WebSocketConnectionManager:
         
         payload = json.dumps({
             "type": channel,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(IST).isoformat(),
             "data": message,
         })
         

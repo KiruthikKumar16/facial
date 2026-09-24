@@ -64,6 +64,9 @@ export function Dashboard() {
     })
     const wsKpis = connectKpisWebSocket((data) => {
       queryClient.invalidateQueries({ queryKey: ['kpis'] })
+      queryClient.invalidateQueries({ queryKey: ['footfall'] })
+      queryClient.invalidateQueries({ queryKey: ['attendance'] })
+      queryClient.invalidateQueries({ queryKey: ['gender-dist'] })
     })
 
     return () => {

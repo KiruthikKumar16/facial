@@ -2,7 +2,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Tuple, Dict, Any
-from pydantic import BaseModel, field_validator
+from pydantic import ConfigDict, BaseModel, field_validator
 
 
 # ==================== Enums ====================
@@ -67,8 +67,7 @@ class CameraResponse(CameraBase):
     last_heartbeat: datetime
     detections_today: int
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ==================== Profile ====================
@@ -86,8 +85,7 @@ class ProfileResponse(ProfileBase):
     enrolled_at: datetime
     last_seen: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -212,8 +210,7 @@ class DetectionResponse(DetectionBase):
     sync_info: Optional[SequenceSyncInfo] = None
     inserted: bool = True  # True = newly created; False = duplicate, existing row returned
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ==================== Camera Configuration ====================
@@ -254,8 +251,7 @@ class CameraConfigResponse(CameraConfigBase):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CameraConfigHistoryResponse(BaseModel):
@@ -300,8 +296,7 @@ class AlertResponse(BaseModel):
     acknowledged: bool
     snapshot_tone: str
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ==================== KPIs ====================
@@ -332,8 +327,7 @@ class ModelThresholdsResponse(BaseModel):
     liveness_threshold: float
     age_variance: float
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ==================== Forensic Search ====================

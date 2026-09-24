@@ -8,16 +8,16 @@ to evaluate whether observations across cameras belong to the same person.
 from __future__ import annotations
 
 import enum
-import json
 import logging
 import time
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime
+from backend.config import IST
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from facial_recognition.topology import CameraEdge, CameraTopologyGraph
+from facial_recognition.topology import CameraTopologyGraph
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ class CrossCameraContinuityTracker:
         """
         trajectory = self.get_or_create_trajectory(identity)
         node_id = f"{identity}_{camera_id}_{int(timestamp * 1000)}"
-        iso_ts = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+        iso_ts = datetime.fromtimestamp(timestamp, tz=IST).isoformat()
 
         transition_type: Optional[TransitionType] = None
         reasoning: Optional[TransitionReasoning] = None

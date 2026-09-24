@@ -1,29 +1,33 @@
 """FastAPI application entry point."""
 import logging
-import random
 import time
 import uuid
+import os
+import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta
 import json
 import hashlib
 from typing import Optional, List, Dict, Any
 
-from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException, Header
+# Add parent directory to sys.path to access facial_recognition module
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from backend.config import IST
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, extract, text, case, select
+from sqlalchemy import func, extract, text, case, select, or_
 
-import io
 import cv2
 import numpy as np
 
 import sys
 import os
 import asyncio
-import threading
 import yaml
 from pathlib import Path
 
@@ -52,7 +56,7 @@ from models import (
     ProfileRole as ProfileRoleEnum, Gender as GenderEnum, EmbeddingStatus as EmbeddingStatusEnum
 )
 from schemas import (
-    CameraResponse, ProfileResponse, ProfileUpdateRequest, DetectionResponse, ProfileCreateRequest, ProfileMergeRequest,
+    CameraResponse, ProfileResponse, ProfileUpdateRequest, DetectionResponse, ProfileMergeRequest,
     UnregisteredSubjectResponse, UnregisteredSubjectRenameRequest, UnregisteredSubjectRegisterRequest,
     UnregisteredSubjectAssignRequest, UnregisteredSubjectMergeRequest,
     FaceLogResponse, AlertResponse,
@@ -61,26 +65,23 @@ from schemas import (
     SyncReconciliationResponse,
     CameraSyncRanges,
     SystemKpisResponse, ModelThresholdsResponse,
-    ForensicMatchResponse, ForensicVectorSearchRequest, AttendanceRecordResponse,
-    DuplicateCandidateResponse, TrajectoryNodeResponse, SubjectTrajectoryResponse,
+    ForensicMatchResponse, ForensicVectorSearchRequest, DuplicateCandidateResponse, TrajectoryNodeResponse, SubjectTrajectoryResponse,
     MovementEdgeResponse, MovementNetworkResponse,
-    FootfallBucketResponse, DemographicSliceResponse, SystemKpisFullResponse,
-    ForensicMatchFullResponse, AttendanceRecordFullResponse,
+    FootfallBucketResponse, DemographicSliceResponse, AttendanceRecordFullResponse,
     DetectionCreateRequest,
     DetectionBatchRequest, SequenceSyncInfo,
-    CameraEdgeCreateRequest, CameraEdgeResponse, CameraNodeResponse, CameraTopologyResponse,
+    CameraEdgeCreateRequest, CameraEdgeResponse, CameraTopologyResponse,
     CrossCameraEvaluationRequest, CrossCameraEvaluationResponse,
-    VectorSearchRequest, VectorSearchResponse, VectorSearchMatch, GalleryResponse,
-    VersionBundleResponse,
+    VectorSearchRequest, VectorSearchResponse, VectorSearchMatch, VersionBundleResponse,
     NodeHealthReportRequest, NodeHealthReportResponse,
     ProvenanceResponse, ProvenanceStageResponse, ProvenanceCandidateResponse,
     ProvenanceRetentionRequest, ProvenanceRetentionResponse, AlertAcknowledgeRequest,
 )
 from websocket import manager
 
-from facial_recognition.topology import CameraTopologyGraph, CameraEdge
-from facial_recognition.cross_camera_tracker import CrossCameraContinuityTracker, TransitionType
-from facial_recognition.version_bundle import ModelConfigVersionBundle, EmbeddingVersionValidator, IncompatibleEmbeddingModelError
+from facial_recognition.topology import CameraTopologyGraph
+from facial_recognition.cross_camera_tracker import CrossCameraContinuityTracker
+from facial_recognition.version_bundle import ModelConfigVersionBundle, EmbeddingVersionValidator
 
 # Initialize global topology graph and cross-camera tracker
 topology_graph = CameraTopologyGraph()
@@ -176,7 +177,8 @@ AVATAR_TONES = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', '
 
 
 def snapshot_tone_for(key: str) -> str:
-    return AVATAR_TONES[hash(key) % len(AVATAR_TONES)]
+    digest = hashlib.md5(key.encode('utf-8')).hexdigest()
+    return AVATAR_TONES[int(digest, 16) % len(AVATAR_TONES)]
 
 
 def is_pending_unknown_identity(identity: str) -> bool:
@@ -266,7 +268,6 @@ def build_face_log_payload(
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager."""
     # Startup
-    ensure_detection_event_id_column()
     Base.metadata.create_all(bind=engine)
     logger.info("Database initialized")
     
@@ -315,14 +316,14 @@ async def lifespan(app: FastAPI):
         try:
             pipeline.stop()
         except Exception:
-            pass
+            logger.exception("Failed to stop pipeline")
     camera_pipelines.clear()
     det_logger_obj = ai_models.get("det_logger")
     if det_logger_obj:
         try:
             det_logger_obj.close()
         except Exception:
-            pass
+            logger.exception("Failed to close det_logger")
     ai_models.clear()
 
 async def extract_face_embedding(file: UploadFile) -> Optional[np.ndarray]:
@@ -420,7 +421,7 @@ def get_gallery(
         "labels": labels,
         "embeddings": embeddings,
         "profile_ids": profile_ids,
-        "synced_at": datetime.now(timezone.utc).isoformat(),
+        "synced_at": datetime.now(IST).isoformat(),
     }
 
 
@@ -500,6 +501,12 @@ async def create_detection(
     Retransmitting the same detection with the same event_id returns existing record.
     """
     import asyncio
+
+    # Ensure timestamp is explicitly strictly IST 
+    if req.timestamp.tzinfo is None:
+        req_timestamp_ist = req.timestamp.replace(tzinfo=IST)
+    else:
+        req_timestamp_ist = req.timestamp.astimezone(IST)
     
     sync_info = None
     is_duplicate = False
@@ -566,15 +573,15 @@ async def create_detection(
     if profile_id:
         previous = db.query(Detection).filter(
             Detection.profile_id == profile_id,
-            Detection.timestamp < req.timestamp,
+            Detection.timestamp < req_timestamp_ist,
         ).order_by(Detection.timestamp.desc()).first()
         if previous and previous.camera_id != req.camera_id:
             previous_timestamp = previous.timestamp
-            if previous_timestamp.tzinfo is None and req.timestamp.tzinfo is not None:
-                previous_timestamp = previous_timestamp.replace(tzinfo=req.timestamp.tzinfo)
-            elif previous_timestamp.tzinfo is not None and req.timestamp.tzinfo is None:
+            if previous_timestamp.tzinfo is None and req_timestamp_ist.tzinfo is not None:
+                previous_timestamp = previous_timestamp.replace(tzinfo=req_timestamp_ist.tzinfo)
+            elif previous_timestamp.tzinfo is not None and req_timestamp_ist.tzinfo is None:
                 previous_timestamp = previous_timestamp.replace(tzinfo=None)
-            travel_seconds = (req.timestamp - previous_timestamp).total_seconds()
+            travel_seconds = (req_timestamp_ist - previous_timestamp).total_seconds()
             
             # Cross-Camera continuity evaluation with topology and temporal constraints
             classification, reasoning = continuity_tracker.evaluate_transition(
@@ -589,7 +596,7 @@ async def create_detection(
                 profile_id=profile_id,
                 from_camera_id=previous.camera_id,
                 to_camera_id=req.camera_id,
-                detected_at=req.timestamp,
+                detected_at=req_timestamp_ist,
                 travel_seconds=travel_seconds,
                 confidence=req.confidence,
                 transition_type=classification.value,
@@ -599,7 +606,7 @@ async def create_detection(
             ))
 
     if profile is not None:
-        profile.last_seen = req.timestamp
+        profile.last_seen = req_timestamp_ist
 
     detection = Detection(
         id=str(uuid.uuid4()),
@@ -609,7 +616,7 @@ async def create_detection(
         sequence_number=req.sequence_number,
         camera_id=req.camera_id,
         profile_id=profile_id,
-        timestamp=req.timestamp,
+        timestamp=req_timestamp_ist,
         status=status,
         confidence=req.confidence,
         bbox=f"[{int(req.bbox[0])}, {int(req.bbox[1])}, {int(req.bbox[2])}, {int(req.bbox[3])}]",
@@ -647,8 +654,14 @@ async def create_detection(
         inserted = True
 
         # Store Provenance Lineage Record
-        prov_dict = req.provenance or {}
-        frame_ref = prov_dict.get("frame_reference", f"frm_{req.camera_id}_{int(req.timestamp.timestamp()*1000)}")
+        if req.provenance:
+            prov_dict = req.provenance if isinstance(req.provenance, dict) else (
+                req.provenance.model_dump() if hasattr(req.provenance, 'model_dump') else req.provenance.dict()
+            )
+        else:
+            prov_dict = {}
+
+        frame_ref = prov_dict.get("frame_reference", f"frm_{req.camera_id}_{int(req_timestamp_ist.timestamp()*1000)}")
         track_id = prov_dict.get("track_id")
         obs_refs = json.dumps(prov_dict.get("observation_references", [f"obs_{frame_ref}_01"]))
         cand_matches = json.dumps(prov_dict.get("candidate_matches", [{"identity": req.identity or "Unknown", "score": req.confidence, "rank": 1}]))
@@ -670,7 +683,7 @@ async def create_detection(
             decision_tier=dec_tier,
             selected_identity=req.identity or "Unknown",
             confidence=req.confidence,
-            decision_timestamp=req.timestamp,
+            decision_timestamp=req_timestamp_ist,
             sync_event_id=prov_dict.get("sync_event_id", f"sync_{req.event_id}"),
             provenance_chain_hash=chain_hash,
         )
@@ -679,12 +692,17 @@ async def create_detection(
     except IntegrityError:
         db.rollback()
         # The event_id already exists. This handles concurrent duplicate submissions safely.
+    except Exception as e:
+        import traceback
+        with open("error_log.txt", "w") as f:
+            f.write(traceback.format_exc())
+        raise
         existing = db.query(Detection).filter(Detection.event_id == req.event_id).first()
         if not existing:
             raise  # IntegrityError wasn't caused by event_id uniqueness
         
         logger.info(f"Detection {req.event_id} already exists (idempotent retry)")
-        resp = DetectionResponse.from_orm(existing)
+        resp = DetectionResponse.model_validate(existing)
         resp.sync_info = sync_info
         resp.inserted = False
         return resp
@@ -710,7 +728,7 @@ async def create_detection(
     asyncio.create_task(manager.broadcast("alerts", face_log))
     asyncio.create_task(manager.broadcast("kpis", {"refresh": True}))
 
-    resp = DetectionResponse.from_orm(detection)
+    resp = DetectionResponse.model_validate(detection)
     resp.sync_info = sync_info
     resp.inserted = inserted
     return resp
@@ -812,7 +830,7 @@ def reconcile_sync(
 @app.get("/api/analytics/movement-network", response_model=MovementNetworkResponse)
 def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
     """Return observed identified-person movement between cameras."""
-    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+    start_time = datetime.now(IST) - timedelta(hours=hours)
     rows = db.query(
         CameraTransition.from_camera_id,
         CameraTransition.to_camera_id,
@@ -844,7 +862,7 @@ def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
 @app.get("/health")
 def health_check():
     """Simple health check endpoint."""
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(IST).isoformat()}
 
 
 # ==================== KPI Endpoints ====================
@@ -852,7 +870,7 @@ def health_check():
 @app.get("/api/kpis", response_model=SystemKpisResponse)
 def get_kpis(db: Session = Depends(get_db)):
     """Get system KPIs."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(IST).date()
     
     total_detections = db.query(func.count(Detection.id)).scalar() or 0
     unique_profiles = db.query(func.count(func.distinct(Detection.profile_id))).scalar() or 0
@@ -899,7 +917,7 @@ def get_kpis(db: Session = Depends(get_db)):
 def get_cameras(db: Session = Depends(get_db)):
     """Get all cameras with health status."""
     cameras = db.query(Camera).all()
-    return [CameraResponse.from_orm(c) for c in cameras]
+    return [CameraResponse.model_validate(c) for c in cameras]
 
 
 # ==================== Camera Configuration Endpoints ====================
@@ -932,13 +950,13 @@ def get_camera_config(camera_id: str, db: Session = Depends(get_db)):
             sampling_rate=1,
             temporal_window=3.0,
             notes="Initial default configuration",
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(IST)
         )
         db.add(config)
         db.commit()
         db.refresh(config)
 
-    return CameraConfigResponse.from_orm(config)
+    return CameraConfigResponse.model_validate(config)
 
 
 @app.post("/api/cameras/{camera_id}/config", response_model=CameraConfigResponse)
@@ -980,14 +998,14 @@ def update_camera_config(
         sampling_rate=req.sampling_rate if req.sampling_rate is not None else (latest.sampling_rate if latest else 1),
         temporal_window=req.temporal_window if req.temporal_window is not None else (latest.temporal_window if latest else 3.0),
         notes=req.notes or f"Updated to version {next_version}",
-        created_at=datetime.now(timezone.utc)
+        created_at=datetime.now(IST)
     )
     db.add(new_config)
     db.commit()
     db.refresh(new_config)
 
     logger.info(f"Camera {camera_id} configuration updated to version {next_version}")
-    return CameraConfigResponse.from_orm(new_config)
+    return CameraConfigResponse.model_validate(new_config)
 
 
 @app.post("/api/cameras/{camera_id}/config/rollback/{version}", response_model=CameraConfigResponse)
@@ -1039,14 +1057,14 @@ def _execute_rollback(camera_id: str, version: int, notes: Optional[str], db: Se
         sampling_rate=target.sampling_rate,
         temporal_window=target.temporal_window,
         notes=notes or f"Rollback to version {version}",
-        created_at=datetime.now(timezone.utc)
+        created_at=datetime.now(IST)
     )
     db.add(rollback_config)
     db.commit()
     db.refresh(rollback_config)
 
     logger.info(f"Camera {camera_id} rolled back to parameters of v{version} as new v{next_version}")
-    return CameraConfigResponse.from_orm(rollback_config)
+    return CameraConfigResponse.model_validate(rollback_config)
 
 
 @app.get("/api/cameras/{camera_id}/config/history", response_model=CameraConfigHistoryResponse)
@@ -1061,7 +1079,7 @@ def get_camera_config_history(camera_id: str, db: Session = Depends(get_db)):
     return CameraConfigHistoryResponse(
         camera_id=camera_id,
         active_version=active,
-        history=[CameraConfigResponse.from_orm(c) for c in configs]
+        history=[CameraConfigResponse.model_validate(c) for c in configs]
     )
 
 
@@ -1072,7 +1090,7 @@ def get_all_active_camera_configs(
 ):
     """Bulk sync endpoint for edge nodes to fetch active configurations for all cameras."""
     configs = db.query(CameraConfig).filter(CameraConfig.is_active == True).all()
-    return [CameraConfigResponse.from_orm(c) for c in configs]
+    return [CameraConfigResponse.model_validate(c) for c in configs]
 
 
 # ==================== Camera Topology & Cross-Camera Continuity Endpoints ====================
@@ -1162,7 +1180,7 @@ def report_node_health(
     Ingest live health metrics, operational mode, and adaptive runtime decisions
     from an edge recognition node.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(IST)
     node_health_store[req.device_id] = {
         "device_id": req.device_id,
         "camera_id": req.camera_id,
@@ -1300,7 +1318,7 @@ def enforce_provenance_retention(
     Purges historical processing lineage older than max_retention_days while retaining the detection.
     """
     from datetime import timedelta
-    cutoff = datetime.now(timezone.utc) - timedelta(days=req.max_retention_days)
+    cutoff = datetime.now(IST) - timedelta(days=req.max_retention_days)
     
     # Count & delete expired records
     expired_records = db.query(EventProvenance).filter(EventProvenance.created_at < cutoff).all()
@@ -1429,7 +1447,7 @@ def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegis
         role = ProfileRoleEnum(req.role)
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid profile role")
-    profile = Profile(id=str(uuid.uuid4()), name=req.name.strip(), role=role, department=req.department, embedding_status=EmbeddingStatusEnum.indexed, embedding_count=1, enrolled_at=datetime.now(timezone.utc))
+    profile = Profile(id=str(uuid.uuid4()), name=req.name.strip(), role=role, department=req.department, embedding_status=EmbeddingStatusEnum.indexed, embedding_count=1, enrolled_at=datetime.now(IST))
     if not profile.name:
         raise HTTPException(status_code=422, detail="Profile name cannot be empty")
     db.add(profile)
@@ -1438,7 +1456,7 @@ def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegis
     subject.status = "registered"
     db.commit()
     db.refresh(profile)
-    return ProfileResponse.from_orm(profile)
+    return ProfileResponse.model_validate(profile)
 
 
 @app.post("/api/unregistered-subjects/{subject_id}/assign", response_model=ProfileResponse)
@@ -1450,7 +1468,7 @@ def assign_unregistered_subject(subject_id: str, req: UnregisteredSubjectAssignR
     db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({"profile_id": profile.id, "status": DetectionStatusEnum.recognized, "unregistered_subject_id": None})
     subject.status = "assigned"
     db.commit()
-    return ProfileResponse.from_orm(profile)
+    return ProfileResponse.model_validate(profile)
 
 
 @app.post("/api/unregistered-subjects/{subject_id}/merge", response_model=UnregisteredSubjectResponse)
@@ -1496,7 +1514,7 @@ def delete_unregistered_subject(subject_id: str, db: Session = Depends(get_db)):
 def get_profiles(db: Session = Depends(get_db)):
     """Get all profiles."""
     profiles = db.query(Profile).all()
-    return [ProfileResponse.from_orm(p) for p in profiles]
+    return [ProfileResponse.model_validate(p) for p in profiles]
 
 
 @app.get("/api/profiles/{profile_id}", response_model=ProfileResponse)
@@ -1505,7 +1523,7 @@ def get_profile(profile_id: str, db: Session = Depends(get_db)):
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
         return {"detail": "Profile not found"}
-    return ProfileResponse.from_orm(profile)
+    return ProfileResponse.model_validate(profile)
 
 
 @app.post("/api/profiles", response_model=ProfileResponse)
@@ -1528,7 +1546,7 @@ async def create_profile(
         department=department,
         embedding_status=EmbeddingStatusEnum.pending,
         embedding_count=0,
-        enrolled_at=datetime.now(timezone.utc)
+        enrolled_at=datetime.now(IST)
     )
     db.add(profile)
     db.commit()
@@ -1552,7 +1570,7 @@ async def create_profile(
             db.commit()
             
     db.refresh(profile)
-    return ProfileResponse.from_orm(profile)
+    return ProfileResponse.model_validate(profile)
 
 
 @app.put("/api/profiles/{profile_id}", response_model=ProfileResponse)
@@ -1574,7 +1592,7 @@ def update_profile(profile_id: str, req: ProfileUpdateRequest, db: Session = Dep
         profile.department = req.department.strip() or None
     db.commit()
     db.refresh(profile)
-    return ProfileResponse.from_orm(profile)
+    return ProfileResponse.model_validate(profile)
 
 
 @app.delete("/api/profiles/{profile_id}")
@@ -2096,6 +2114,7 @@ def run_forensic_vector_search(
 @app.post("/api/forensic/search", response_model=list[ForensicMatchResponse])
 async def run_forensic_search(
     image: UploadFile = File(None),
+    profile_id: Optional[str] = Form(None),
     threshold: float = Form(0.60),
     date_from: Optional[datetime] = Form(None),
     date_to: Optional[datetime] = Form(None),
@@ -2108,29 +2127,42 @@ async def run_forensic_search(
     db: Session = Depends(get_db)
 ):
     """Run forensic search using pgvector."""
-    if not image:
-        raise HTTPException(status_code=400, detail="Upload a probe image to run forensic search.")
+    if not image and not profile_id:
+        raise HTTPException(status_code=400, detail="Upload a probe image or select a known vector to run forensic search.")
 
-    if not ai_models.get("detector"):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Forensic image search is not enabled on this backend. "
-                "Run the backend locally, or set ENABLE_FORENSIC_SEARCH=true "
-                "on Render and redeploy."
-            ),
-        )
-    
-    target_embedding = await extract_face_embedding(image)
-    if target_embedding is None:
-        raise HTTPException(
-            status_code=422,
-            detail="No face embedding could be extracted from the uploaded image.",
-        )
+    target_embedding = None
+    if image:
+        if not ai_models.get("detector"):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Forensic image search is not enabled on this backend. "
+                    "Run the backend locally, or set ENABLE_FORENSIC_SEARCH=true "
+                    "on Render and redeploy."
+                ),
+            )
+        target_embedding_raw = await extract_face_embedding(image)
+        if target_embedding_raw is None:
+            raise HTTPException(
+                status_code=422,
+                detail="No face embedding could be extracted from the uploaded image.",
+            )
+        target_embedding = target_embedding_raw.tolist()
+    else:
+        # Load embedding from known profile/vector
+        profile = db.query(Profile).filter(Profile.id == profile_id).first()
+        if profile and profile.embeddings:
+            target_embedding = profile.embeddings[0].vector
+        else:
+            unreg = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == profile_id).first()
+            if unreg and unreg.representative_embedding is not None:
+                target_embedding = unreg.representative_embedding
+            else:
+                raise HTTPException(status_code=404, detail="Selected vector not found or has no embedding.")
 
     return run_forensic_vector_query(
         db=db,
-        target_embedding=target_embedding.tolist(),
+        target_embedding=list(target_embedding),
         threshold=threshold,
         date_from=date_from,
         date_to=date_to,
@@ -2189,7 +2221,7 @@ def get_duplicates(db: Session = Depends(get_db)):
 
 @app.get("/api/analytics/trajectory", response_model=SubjectTrajectoryResponse)
 def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Session = Depends(get_db)):
-    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+    start_time = datetime.now(IST) - timedelta(hours=hours)
     
     profile = db.query(Profile).filter(Profile.id == profileId).first()
     if not profile:
@@ -2221,61 +2253,90 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
 @app.get("/api/analytics/footfall", response_model=list[FootfallBucketResponse])
 def get_footfall(
     days: int = Query(7, description="Number of days to look back from today (used if date_from/date_to not provided)"),
-    date_from: Optional[datetime] = Query(None, description="Start date (inclusive) in UTC"),
-    date_to: Optional[datetime] = Query(None, description="End date (inclusive) in UTC"),
+    date_from: Optional[datetime] = Query(None, description="Start date (inclusive) in IST"),
+    date_to: Optional[datetime] = Query(None, description="End date (inclusive) in IST"),
     db: Session = Depends(get_db)
 ):
     # Determine the time range to filter by
     if date_from is not None or date_to is not None:
         # Use explicit date range if provided
         if date_from is not None:
-            start_time = date_from
+            start_time = date_from.replace(tzinfo=None)
         else:
             # If only date_to is provided, default to 7 days before date_to
-            start_time = date_to - timedelta(days=7)
+            start_time = date_to.replace(tzinfo=None) - timedelta(days=7)
 
         if date_to is not None:
-            end_time = date_to
+            end_time = date_to.replace(tzinfo=None)
         else:
             # If only date_from is provided, default to 7 days after date_from
-            end_time = date_from + timedelta(days=7)
+            end_time = date_from.replace(tzinfo=None) + timedelta(days=7)
 
         # Adjust end_time to be the end of the day (23:59:59.999999)
         end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
     else:
         # Fall back to original behavior for backward compatibility
-        start_time = datetime.now(timezone.utc) - timedelta(days=days)
-        end_time = datetime.now(timezone.utc)
+        start_time = datetime.now(IST) - timedelta(days=days)
+        end_time = datetime.now(IST)
 
-    results = db.query(
-        extract('hour', Detection.timestamp).label('hour'),
-        func.count(Detection.id).label('total'),
-        func.sum(case((Detection.status == DetectionStatusEnum.recognized, 1), else_=0)).label('recognized'),
-        func.sum(case((Detection.status == DetectionStatusEnum.unknown, 1), else_=0)).label('unknown')
+    detections = db.query(
+        Detection.timestamp,
+        Detection.status
     ).filter(
         Detection.timestamp >= start_time,
         Detection.timestamp <= end_time
-    ).group_by(extract('hour', Detection.timestamp)).all()
+    ).all()
 
     buckets = {}
-    for r in results:
-        hour_str = f"{int(r.hour):02d}:00"
-        buckets[hour_str] = FootfallBucketResponse(
-            hour=hour_str,
-            detections=r.total,
-            recognized=r.recognized or 0,
-            unknown=r.unknown or 0
-        )
+    for d in detections:
+        # Ensure timestamp is treated as IST
+        if d.timestamp.tzinfo is None:
+            ts = d.timestamp.replace(tzinfo=IST)
+        else:
+            ts = d.timestamp.astimezone(IST)
+            
+        hour_str = f"{ts.hour:02d}:00"
+        if hour_str not in buckets:
+            buckets[hour_str] = {'total': 0, 'recognized': 0, 'unknown': 0}
+            
+        buckets[hour_str]['total'] += 1
+        if d.status == DetectionStatusEnum.recognized:
+            buckets[hour_str]['recognized'] += 1
+        elif d.status == DetectionStatusEnum.unknown:
+            buckets[hour_str]['unknown'] += 1
 
     final_res = []
     for i in range(24):
         hour_str = f"{i:02d}:00"
-        final_res.append(buckets.get(hour_str, FootfallBucketResponse(hour=hour_str, detections=0, recognized=0, unknown=0)))
+        b = buckets.get(hour_str, {'total': 0, 'recognized': 0, 'unknown': 0})
+        final_res.append(FootfallBucketResponse(
+            hour=hour_str, 
+            detections=b['total'], 
+            recognized=b['recognized'], 
+            unknown=b['unknown']
+        ))
     return final_res
 
 @app.get("/api/analytics/age-distribution", response_model=list[DemographicSliceResponse])
-def get_age_distribution(db: Session = Depends(get_db)):
-    results = db.query(Detection.age, func.count(Detection.id)).filter(Detection.age != None).group_by(Detection.age).all()
+def get_age_distribution(
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db)
+):
+    # Use DISTINCT ON subject to guarantee each person is counted exactly once, even if age prediction varied
+    subject_id_col = func.coalesce(Detection.profile_id, Detection.unregistered_subject_id).label("subject_id")
+    subq = db.query(subject_id_col, Detection.age).filter(
+        or_(Detection.profile_id != None, Detection.unregistered_subject_id != None),
+        Detection.age != None
+    )
+    if date_from:
+        subq = subq.filter(Detection.timestamp >= date_from.replace(tzinfo=None))
+    if date_to:
+        subq = subq.filter(Detection.timestamp <= date_to.replace(tzinfo=None))
+    
+    subq = subq.distinct(func.coalesce(Detection.profile_id, Detection.unregistered_subject_id)).subquery()
+
+    results = db.query(subq.c.age, func.count(subq.c.subject_id)).group_by(subq.c.age).all()
     
     buckets = {"18-24": 0, "25-34": 0, "35-44": 0, "45-54": 0, "55+": 0}
     for age, count in results:
@@ -2289,49 +2350,102 @@ def get_age_distribution(db: Session = Depends(get_db)):
     return [DemographicSliceResponse(label=k, value=v) for k, v in buckets.items()]
 
 @app.get("/api/analytics/gender-distribution", response_model=list[DemographicSliceResponse])
-def get_gender_distribution(db: Session = Depends(get_db)):
-    results = db.query(Detection.gender, func.count(Detection.id)).group_by(Detection.gender).all()
+def get_gender_distribution(
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db)
+):
+    # Use DISTINCT ON subject to guarantee each person is counted exactly once, even if gender prediction varied
+    subject_id_col = func.coalesce(Detection.profile_id, Detection.unregistered_subject_id).label("subject_id")
+    subq = db.query(subject_id_col, Detection.gender).filter(
+        or_(Detection.profile_id != None, Detection.unregistered_subject_id != None),
+        Detection.gender != None
+    )
+    if date_from:
+        subq = subq.filter(Detection.timestamp >= date_from.replace(tzinfo=None))
+    if date_to:
+        subq = subq.filter(Detection.timestamp <= date_to.replace(tzinfo=None))
+    
+    subq = subq.distinct(func.coalesce(Detection.profile_id, Detection.unregistered_subject_id)).subquery()
+
+    results = db.query(subq.c.gender, func.count(subq.c.subject_id)).group_by(subq.c.gender).all()
     slices = []
     for gender, count in results:
         if gender:
-            slices.append(DemographicSliceResponse(label=gender.value.capitalize(), value=count))
+            label = gender.value.capitalize() if hasattr(gender, 'value') else str(gender).capitalize()
+            slices.append(DemographicSliceResponse(label=label, value=count))
     return slices
 
 @app.get("/api/analytics/attendance", response_model=list[AttendanceRecordFullResponse])
-def get_attendance(days: int = Query(7), db: Session = Depends(get_db)):
-    start_time = datetime.now(timezone.utc) - timedelta(days=days)
+def get_attendance(
+    days: int = Query(7),
+    date_from: Optional[datetime] = Query(None, description="Start date (inclusive) in IST"),
+    date_to: Optional[datetime] = Query(None, description="End date (inclusive) in IST"),
+    db: Session = Depends(get_db)
+):
+    if date_from is not None or date_to is not None:
+        if date_from is not None:
+            start_time = date_from.replace(tzinfo=None)
+        else:
+            start_time = date_to.replace(tzinfo=None) - timedelta(days=7)
+        if date_to is not None:
+            end_time = date_to.replace(tzinfo=None)
+        else:
+            end_time = date_from.replace(tzinfo=None) + timedelta(days=7)
+        end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+    else:
+        start_time = datetime.now(IST) - timedelta(days=days)
+        end_time = datetime.now(IST)
     
     results = db.query(
         Detection.profile_id,
+        Detection.unregistered_subject_id,
         func.min(Detection.timestamp).label('check_in'),
         func.max(Detection.timestamp).label('check_out'),
         func.count(Detection.id).label('total_sightings'),
     ).filter(
-        Detection.profile_id != None,
-        Detection.timestamp >= start_time
-    ).group_by(Detection.profile_id).all()
+        (Detection.profile_id != None) | (Detection.unregistered_subject_id != None),
+        Detection.timestamp >= start_time,
+        Detection.timestamp <= end_time
+    ).group_by(Detection.profile_id, Detection.unregistered_subject_id).all()
 
     if not results:
         return []
 
+    profile_ids = [r.profile_id for r in results if r.profile_id]
+    unreg_ids = [r.unregistered_subject_id for r in results if r.unregistered_subject_id]
+    
+    profiles = {p.id: p for p in db.query(Profile).filter(Profile.id.in_(profile_ids)).all()} if profile_ids else {}
+    from models import UnregisteredSubject
+    unregs = {u.id: u for u in db.query(UnregisteredSubject).filter(UnregisteredSubject.id.in_(unreg_ids)).all()} if unreg_ids else {}
+
     records = []
-    profile_ids = [r.profile_id for r in results]
-    profiles = {p.id: p for p in db.query(Profile).filter(Profile.id.in_(profile_ids)).all()}
     
     for row in results:
-        profile = profiles.get(row.profile_id)
-        if not profile:
-            continue
-        records.append(AttendanceRecordFullResponse(
-            profileId=profile.id,
-            profileName=profile.name,
-            role=profile.role.value,
-            department=profile.department,
-            checkIn=row.check_in,
-            checkOut=row.check_out,
-            totalSightings=int(row.total_sightings or 0),
-            avatarTone=snapshot_tone_for(profile.id),
-        ))
+        if row.profile_id and row.profile_id in profiles:
+            p = profiles[row.profile_id]
+            records.append(AttendanceRecordFullResponse(
+                profileId=p.id,
+                profileName=p.name,
+                role=p.role.value,
+                department=p.department,
+                checkIn=row.check_in,
+                checkOut=row.check_out,
+                totalSightings=int(row.total_sightings or 0),
+                avatarTone=snapshot_tone_for(p.id),
+            ))
+        elif row.unregistered_subject_id and row.unregistered_subject_id in unregs:
+            u = unregs[row.unregistered_subject_id]
+            records.append(AttendanceRecordFullResponse(
+                profileId=u.id,
+                profileName=u.display_name,
+                role="unknown",
+                department=None,
+                checkIn=row.check_in,
+                checkOut=row.check_out,
+                totalSightings=int(row.total_sightings or 0),
+                avatarTone="gray",
+            ))
     return records
 
 

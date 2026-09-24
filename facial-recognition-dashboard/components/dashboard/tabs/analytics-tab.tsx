@@ -43,7 +43,11 @@ import {
   Calendar,
 } from 'lucide-react'
 
-const GENDER_COLORS = ['var(--chart-4)', 'var(--chart-1)', 'var(--muted-foreground)']
+const GENDER_COLORS: Record<string, string> = {
+  Male: '#3b82f6',
+  Female: '#f472b6',
+  Unknown: '#9ca3af'
+}
 
 // Helper function to fetch gender distribution filtered by date
 const fetchGenderDistributionByDate = async (selectedDates: Date[]): Promise<{ label: string; value: number }[]> => {
@@ -52,13 +56,30 @@ const fetchGenderDistributionByDate = async (selectedDates: Date[]): Promise<{ l
 
   try {
     // Fetch face logs (we'll get a reasonable limit to cover the date range)
-    const faceLogs = await fetchFaceLogs(1000) // Get more logs to increase chance of matching dates
+    const faceLogs = await fetchFaceLogs(10000) // Get all detections for the day to ensure total count matches
 
     // Filter logs by selected dates
     const filteredLogs = faceLogs.filter(log => {
       const logDate = parseTimestampToDate(log.timestamp)
       return filterDates.some(filterDate => isSameDay(logDate, filterDate))
     })
+
+    // Deduplicate by profileId (to avoid counting the same person multiple times)
+    // Unknowns without a profileId will be counted individually unless they can be grouped
+    const uniqueLogs = []
+    const seenProfiles = new Set<string>()
+    
+    for (const log of filteredLogs) {
+      if (log.profileId) {
+        if (!seenProfiles.has(log.profileId)) {
+          seenProfiles.add(log.profileId)
+          uniqueLogs.push(log)
+        }
+      } else {
+        // For unknown faces, we have to include them, but ideally we'd track them uniquely too
+        uniqueLogs.push(log)
+      }
+    }
 
     // Aggregate by gender
     const genderCounts = {
@@ -67,7 +88,7 @@ const fetchGenderDistributionByDate = async (selectedDates: Date[]): Promise<{ l
       unknown: 0
     }
 
-    filteredLogs.forEach(log => {
+    uniqueLogs.forEach(log => {
       if (log.gender === 'male') {
         genderCounts.male++
       } else if (log.gender === 'female') {
@@ -123,7 +144,8 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
       }
 
       return fetchFootfall(undefined, date_from, date_to)
-    }
+    },
+    refetchInterval: 5000, // Real-time: refresh every 5 seconds
   })
 
   // Generate all 24 hours (00 to 23) to ensure consistent X-axis labels
@@ -169,16 +191,12 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
                 tick={{
                   fill: 'var(--muted-foreground)',
                   fontSize: 11,
-                  // Format tick labels to show just hour number (00, 01, 02, ..., 23)
-                  // instead of "00:00", "01:00", etc.
-                  formatter: (value) => {
-                    // Value should be in "HH" format (e.g., "00", "01", etc.)
-                    // Return as-is for consistent display
-                    if (typeof value === 'string') {
-                      return value;
-                    }
-                    return String(value).padStart(2, '0');
+                }}
+                tickFormatter={(value) => {
+                  if (typeof value === 'string') {
+                    return value;
                   }
+                  return String(value).padStart(2, '0');
                 }}
                 // Ensure all ticks are shown (prevent auto-hiding)
                 tickCount={24}
@@ -221,13 +239,14 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
 
 function DateSelector({
   title = "Date Selector",
+  selectedDates,
   onDateChange,
 }: {
   title?: string
+  selectedDates: Date[]
   onDateChange: (dates: Date[]) => void
 }) {
-  const [currentDate, setCurrentDate] = useState(new Date())
-  const [selectedDates, setSelectedDates] = useState<Date[]>([])
+  const [currentDate, setCurrentDate] = useState(selectedDates.length > 0 ? selectedDates[0] : new Date())
   const [multiSelect, setMultiSelect] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStartCell, setDragStartCell] = useState<number | null>(null)
@@ -241,7 +260,7 @@ function DateSelector({
   const daysInMonth = lastDayOfMonth.getDate()
 
   // Generate days for the calendar grid (5 weeks * 7 days = 35 days)
-  const days = []
+  const days: (Date | null)[] = []
   // Add empty cells for the days before the first day of the month
   for (let i = 0; i < startingDayIndex; i++) {
     days.push(null)
@@ -273,11 +292,9 @@ function DateSelector({
       const updatedDates = isAlreadySelected
         ? selectedDates.filter((d) => !isSameDay(d, date))
         : [...selectedDates, date]
-      setSelectedDates(updatedDates)
       onDateChange(updatedDates)
     } else if (!multiSelect) {
       // Single select mode: always set to the clicked date
-      setSelectedDates([date])
       onDateChange([date])
     }
     // If dragging, we don't handle the click here (handled by drag events)
@@ -295,11 +312,9 @@ function DateSelector({
         const clickedDate = days[cellIndex]
         if (clickedDate && !isSelected(clickedDate)) {
           const newSelectedDates = [...selectedDates, clickedDate]
-          setSelectedDates(newSelectedDates)
           onDateChange(newSelectedDates)
         } else if (clickedDate) {
           const newSelectedDates = selectedDates.filter(d => !isSameDay(d, clickedDate))
-          setSelectedDates(newSelectedDates)
           onDateChange(newSelectedDates)
         }
       }
@@ -329,7 +344,7 @@ function DateSelector({
     // Also include any previously selected cells that are outside the drag range
     // but were selected before drag started (to preserve them)
     const preselectedDates = selectedDates.filter(date =>
-      !days.some((d, idx) => idx >= start && idx <= end && isSameDay(d, date))
+      !days.some((d, idx) => idx >= start && idx <= end && d && isSameDay(d as Date, date))
     )
 
     // Combine and deduplicate
@@ -341,7 +356,6 @@ function DateSelector({
       }
     })
 
-    setSelectedDates(deduplicated)
     onDateChange(deduplicated)
   }
 
@@ -402,7 +416,6 @@ function DateSelector({
     // When switching from multiple to single mode, reset selection to today's date
     if (multiSelect) {
       const today = new Date()
-      setSelectedDates([today])
       onDateChange([today])
     }
     setMultiSelect(!multiSelect)
@@ -490,8 +503,8 @@ function DateSelector({
                   e.preventDefault()
                   // Don't start drag here - handled by container
                   // Just toggle the cell if not dragging
-                  if (!isDragging) {
-                    handleDayClick(date)
+                  if (!isDragging && date) {
+                    handleDayClick(date as Date)
                   }
                 }}
                 onPointerOver={() => {
@@ -562,6 +575,7 @@ function parseTimestampToDate(timestamp: string): Date {
 
 function DemographicPie({
   title,
+  description,
   selectedDates,
   queryKey,
   queryFn,
@@ -572,7 +586,7 @@ function DemographicPie({
   selectedDates: Date[]
   queryKey: string
   queryFn: (selectedDates: Date[]) => Promise<{ label: string; value: number }[]>
-  colors: string[]
+  colors: Record<string, string>
 }) {
   // Create a consistent key from selectedDates for queryKey
   const datesKey = selectedDates.length > 0
@@ -581,19 +595,27 @@ function DemographicPie({
 
   const { data = [] } = useQuery({
     queryKey: [queryKey, datesKey],
-    queryFn: () => queryFn(selectedDates)
+    queryFn: () => queryFn(selectedDates),
+    refetchInterval: 5000, // Real-time: refresh every 5 seconds
   })
+
+  // Calculate total detections across all genders
+  const totalDetections = data.reduce((sum, item) => sum + item.value, 0)
+  
+  // Create a placeholder ring if there are no detections
+  const displayData = totalDetections > 0 ? data : [{ label: 'No Data', value: 1 }]
+
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b border-border py-3">
         <SectionHeading icon={PieIcon} title={title} description={description} />
       </CardHeader>
       <CardContent className="p-4">
-        <div className="h-56 w-full">
+        <div className="h-56 w-full relative">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
-                data={data}
+                data={displayData}
                 dataKey="value"
                 nameKey="label"
                 innerRadius={45}
@@ -601,14 +623,32 @@ function DemographicPie({
                 paddingAngle={2}
                 stroke="var(--card)"
               >
-                {data.map((_, i) => (
-                  <Cell key={i} fill={colors[i % colors.length]} />
+                {displayData.map((entry, i) => (
+                  <Cell key={i} fill={totalDetections > 0 ? (colors[entry.label] || "var(--muted-foreground)") : "var(--muted-foreground)"} />
                 ))}
               </Pie>
-              <RTooltip contentStyle={tooltipStyle} />
+              <RTooltip
+                contentStyle={tooltipStyle}
+                itemStyle={{ color: 'var(--foreground)' }}
+                formatter={(value: any, name: any) => {
+                  if (totalDetections === 0) return ["0 detections (0%)", String(name)];
+                  const val = Number(value) || 0;
+                  return [
+                    `${val} detection${val !== 1 ? 's' : ''} (${((val / totalDetections) * 100).toFixed(1)}%)`,
+                    String(name)
+                  ];
+                }}
+              />
               <Legend wrapperStyle={{ fontSize: 12 }} />
             </PieChart>
           </ResponsiveContainer>
+          {/* Total detections counter in center of donut */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ marginBottom: '24px' }}>
+            <div className="text-center">
+              <p className="text-2xl font-bold tabular-nums">{totalDetections}</p>
+              <p className="text-[10px] text-muted-foreground">Total</p>
+            </div>
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -616,40 +656,25 @@ function DemographicPie({
 }
 
 function AttendanceTable({ selectedDates }: { selectedDates: Date[] }) {
-  const { data = [] } = useQuery({
-    queryKey: ['attendance'],
-    queryFn: () => fetchAttendance(),
-  })
+  const { data: filteredData = [] } = useQuery({
+    queryKey: ['attendance', selectedDates],
+    queryFn: () => {
+      let date_from: Date | undefined
+      let date_to: Date | undefined
 
-  // Determine which dates to filter by: if none selected, use today; otherwise use selected dates
-  const filterDates = selectedDates.length > 0 ? selectedDates : [new Date()]
+      if (selectedDates.length > 0) {
+        const sortedDates = [...selectedDates].sort((a, b) => a.getTime() - b.getTime())
+        date_from = sortedDates[0]
+        date_to = sortedDates[sortedDates.length - 1]
 
-  
-  // Filter attendance data by selected dates
-  const filteredData = data.filter(record => {
-    // Check if checkIn or checkOut date matches any selected date
-    const checkInDate = new Date(record.checkIn)
-    const checkOutDate = new Date(record.checkOut)
-
-    const checkInMatch = filterDates.some(filterDate => {
-      const isMatch = isSameDay(filterDate, checkInDate)
-      if (isMatch) {
+        date_from = new Date(date_from.getFullYear(), date_from.getMonth(), date_from.getDate())
+        date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999999)
       }
-      return isMatch
-    })
 
-    const checkOutMatch = filterDates.some(filterDate => {
-      const isMatch = isSameDay(filterDate, checkOutDate)
-      if (isMatch) {
-      }
-      return isMatch
-    })
-
-    const result = checkInMatch || checkOutMatch
-    return result
+      return fetchAttendance(undefined, date_from, date_to)
+    },
+    refetchInterval: 5000, // Real-time: refresh every 5 seconds
   })
-
-  
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b border-border py-3">
@@ -711,7 +736,7 @@ function AttendanceTable({ selectedDates }: { selectedDates: Date[] }) {
 }
 
 export function AnalyticsTab() {
-  const [selectedDates, setSelectedDates] = useState<Date[]>([])
+  const [selectedDates, setSelectedDates] = useState<Date[]>([new Date()])
 
   return (
     <div className="flex flex-col gap-4">
@@ -720,6 +745,7 @@ export function AnalyticsTab() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
           <DateSelector
             title="Date Selector"
+            selectedDates={selectedDates}
             onDateChange={setSelectedDates}
           />
           <DemographicPie
@@ -727,7 +753,13 @@ export function AnalyticsTab() {
             description="Shows gender split for selected date(s)"
             selectedDates={selectedDates}
             queryKey="gender-dist"
-            queryFn={(selectedDates) => fetchGenderDistributionByDate(selectedDates)}
+            queryFn={(selectedDates) => {
+              const dateFrom = selectedDates.length > 0 ? new Date(Math.min(...selectedDates.map(d => d.getTime()))) : new Date()
+              dateFrom.setHours(0, 0, 0, 0)
+              const dateTo = selectedDates.length > 0 ? new Date(Math.max(...selectedDates.map(d => d.getTime()))) : new Date()
+              dateTo.setHours(23, 59, 59, 999)
+              return fetchGenderDistribution(dateFrom.toISOString(), dateTo.toISOString())
+            }}
             colors={GENDER_COLORS}
           />
         </div>

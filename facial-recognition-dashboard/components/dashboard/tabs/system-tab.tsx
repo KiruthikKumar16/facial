@@ -43,8 +43,8 @@ function LoadBar({ label, value, tone }: { label: string; value: number; tone: s
         <span className="text-muted-foreground">{label}</span>
         <span className="font-mono tabular-nums">{value}%</span>
       </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-        <div className={cn('h-full rounded-full', tone)} style={{ width: `${value}%` }} />
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted shadow-inner">
+        <div className={cn('h-full rounded-full transition-all duration-500 ease-out', tone)} style={{ width: `${value}%` }} />
       </div>
     </div>
   )
@@ -68,10 +68,20 @@ function CameraCard({
   return (
     <Card
       className={cn(
-        'gap-0 py-0',
-        offline && 'opacity-70 ring-1 ring-inset ring-destructive/25',
+        'group relative gap-0 py-0 overflow-hidden transition-all duration-500 hover:-translate-y-1',
+        'bg-card/40 backdrop-blur-xl border-border/40',
+        offline 
+          ? 'opacity-70 ring-1 ring-inset ring-destructive/25'
+          : camera.status === 'online'
+            ? 'hover:border-success/50 hover:bg-success/5 hover:shadow-[0_8px_40px_color-mix(in_oklch,var(--color-success)_20%,transparent)]'
+            : 'hover:border-warning/50 hover:bg-warning/5 hover:shadow-[0_8px_40px_color-mix(in_oklch,var(--color-warning)_20%,transparent)]'
       )}
     >
+      {/* Dynamic top gradient border on hover */}
+      <div className={cn(
+        "absolute inset-x-0 top-0 h-[2px] w-full scale-x-0 opacity-0 transition-all duration-500 ease-out group-hover:scale-x-100 group-hover:opacity-100",
+        camera.status === 'online' ? "bg-gradient-to-r from-success/0 via-success to-success/0" : "bg-gradient-to-r from-warning/0 via-warning to-warning/0"
+      )} />
       <CardContent className="flex flex-col gap-3 p-4">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2.5">
@@ -87,13 +97,16 @@ function CameraCard({
           </div>
           <div className="flex items-center gap-2">
             <span className={cn('flex items-center gap-1.5 text-xs font-medium', meta.text)}>
-              <span className={cn('size-2 rounded-full', meta.dot)} />
+              <span className="relative flex size-2">
+                {camera.status === 'online' && <span className={cn("absolute inline-flex h-full w-full animate-ping rounded-full opacity-75", meta.dot)}></span>}
+                <span className={cn('relative inline-flex size-2 rounded-full', meta.dot)} />
+              </span>
               {meta.label}
             </span>
             <Button
               size="xs"
               variant="outline"
-              className="h-7 gap-1 px-2 font-mono text-[11px]"
+              className="h-7 gap-1 px-2 font-mono text-[11px] hover:bg-muted"
               onClick={() => onConfigure(camera)}
             >
               <Sliders className="size-3 text-primary" />
@@ -102,7 +115,7 @@ function CameraCard({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 rounded-md bg-muted/40 p-2.5 text-center">
+        <div className="grid grid-cols-3 gap-2 rounded-md bg-background/40 backdrop-blur-md p-2.5 text-center border border-border/50">
           <div>
             <p className="font-mono text-sm font-semibold tabular-nums">
               {offline ? '—' : `${camera.pingMs}ms`}
@@ -131,8 +144,8 @@ function CameraCard({
 
         {!offline && (
           <>
-            <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
-              <div className={cn('h-full', latencyTone)} style={{ width: `${Math.min(100, camera.frameLatencyMs)}%` }} />
+            <div className="h-1 w-full overflow-hidden rounded-full bg-muted shadow-inner">
+              <div className={cn('h-full transition-all duration-500 ease-out', latencyTone)} style={{ width: `${Math.min(100, camera.frameLatencyMs)}%` }} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <LoadBar
@@ -238,34 +251,37 @@ function NodeHealthPanel() {
               : 'bg-success/15 text-success border-success/30'
 
           return (
-            <div key={node.nodeId} className="rounded-lg border border-border bg-card/60 p-3.5 space-y-3">
+            <div key={node.nodeId} className="group rounded-lg border border-border/50 bg-card/40 backdrop-blur-md p-3.5 space-y-3 transition-all duration-300 hover:border-info/30 hover:bg-card/60 hover:shadow-[0_4px_20px_color-mix(in_oklch,var(--color-info)_10%,transparent)]">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="size-2 rounded-full bg-success animate-pulse" />
-                  <span className="font-semibold text-sm">{node.nodeId}</span>
+                  <span className="relative flex size-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75"></span>
+                    <span className="relative inline-flex size-2 rounded-full bg-success"></span>
+                  </span>
+                  <span className="font-semibold text-sm transition-colors group-hover:text-info">{node.nodeId}</span>
                   {node.hostname && (
                     <span className="font-mono text-xs text-muted-foreground">({node.hostname})</span>
                   )}
                 </div>
-                <Badge variant="outline" className={cn('font-mono text-[10px]', modeBadgeClass)}>
+                <Badge variant="outline" className={cn('font-mono text-[10px] transition-colors', modeBadgeClass)}>
                   {node.runtimeMode}
                 </Badge>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-                <div className="rounded bg-muted/40 p-2">
+                <div className="rounded border border-border/30 bg-muted/20 p-2 transition-colors group-hover:bg-muted/40 group-hover:border-border/50">
                   <span className="text-muted-foreground block text-[10px]">CPU / Memory</span>
                   <span className="font-bold text-foreground">{node.cpuPercent.toFixed(1)}% / {node.memoryPercent.toFixed(1)}%</span>
                 </div>
-                <div className="rounded bg-muted/40 p-2">
+                <div className="rounded border border-border/30 bg-muted/20 p-2 transition-colors group-hover:bg-muted/40 group-hover:border-border/50">
                   <span className="text-muted-foreground block text-[10px]">FPS (Cam / Infer)</span>
                   <span className="font-bold text-foreground">{node.cameraFps.toFixed(1)} / {node.inferenceFps.toFixed(1)}</span>
                 </div>
-                <div className="rounded bg-muted/40 p-2">
+                <div className="rounded border border-border/30 bg-muted/20 p-2 transition-colors group-hover:bg-muted/40 group-hover:border-border/50">
                   <span className="text-muted-foreground block text-[10px]">Sync Queue / Lag</span>
                   <span className="font-bold text-foreground">{node.syncQueueLength} evts ({node.networkLatencyMs.toFixed(0)}ms)</span>
                 </div>
-                <div className="rounded bg-muted/40 p-2">
+                <div className="rounded border border-border/30 bg-muted/20 p-2 transition-colors group-hover:bg-muted/40 group-hover:border-border/50">
                   <span className="text-muted-foreground block text-[10px]">Sampling / Batch</span>
                   <span className="font-bold text-foreground">{node.frameSamplingRate}x / {node.syncBatchSize}</span>
                 </div>

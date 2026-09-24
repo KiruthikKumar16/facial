@@ -9,12 +9,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from facial_recognition.main_cpu import CpuCameraPipeline, build_sources, load_config
-from facial_recognition.cli import parse_run_args
+from facial_recognition.cli import parse_run_args, resolve_det_size, resolve_model, resolve_camera_size
 from facial_recognition.detector import InsightFaceDetector
 from facial_recognition.recognizer import Recognizer
 from facial_recognition.logger import DetectionLogger
 from facial_recognition.pending import PendingSaver
-from facial_recognition.overly import draw_text_block
 from facial_recognition.edge_stream import EdgeFramePublisher
 from facial_recognition.quality import FaceQualityAssessor
 import threading
@@ -22,10 +21,8 @@ import signal
 import time
 import os
 import yaml
-import numpy as np
 import cv2
-from typing import Any, Dict, List, Tuple, Optional, cast
-from collections import deque
+from typing import Any, Dict, List, Optional, cast
 
 # bind thread limits early to help native libs
 os.environ.setdefault('OMP_NUM_THREADS', os.environ.get('OMP_NUM_THREADS', '4'))
@@ -33,11 +30,12 @@ os.environ.setdefault('MKL_NUM_THREADS', os.environ.get('MKL_NUM_THREADS', '4'))
 os.environ.setdefault('OPENBLAS_NUM_THREADS', os.environ.get('OPENBLAS_NUM_THREADS', '4'))
 
 import cv2  # type: ignore[reportMissingTypeStubs]
-import numpy as np
 import yaml  # type: ignore[reportMissingTypeStubs]
 
 cv2: Any = cv2
 yaml: Any = yaml
+
+import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)

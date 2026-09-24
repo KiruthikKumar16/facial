@@ -9,9 +9,9 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -33,6 +33,8 @@ class FaceObservation:
     confidence: float # detector confidence score 0.0 - 1.0
     embedding: Optional[np.ndarray] = None # 512-d normalized embedding (None if POOR quality)
     track_id: Optional[int] = None
+    gender: Optional[str] = None
+    age: Optional[int] = None
 
 
 class FaceTrack:

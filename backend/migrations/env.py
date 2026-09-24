@@ -2,8 +2,6 @@ import os
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
 import sqlalchemy as sa
 
 from alembic import context
@@ -12,8 +10,8 @@ from alembic import context
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from database import Base, engine as app_engine
-import models # Ensure all models are registered
 from config import settings
+import models
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

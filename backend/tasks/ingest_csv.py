@@ -8,8 +8,9 @@ Run locally to import historical detection data:
 import argparse
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from backend.config import IST
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -126,7 +127,7 @@ def ingest_csv(database_url: str, csv_path: str = None) -> int:
                     'status': status,
                     'confidence': confidence,
                     'bbox': bbox,
-                    'created_at': datetime.now(timezone.utc),
+                    'created_at': datetime.now(IST),
                 })
                 
                 inserted += 1

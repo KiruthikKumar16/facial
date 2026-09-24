@@ -44,7 +44,7 @@ SHA256(canonical_form) → event_id (64 hex chars)
    - Enables per-camera deduplication
 
 3. **capture_timestamp** - When detection occurred
-   - Datetime with UTC timezone
+   - Datetime with IST timezone
    - Normalized to second precision (microseconds removed)
    - Enables event ordering and uniqueness
 
@@ -75,14 +75,14 @@ device_id:camera_id:timestamp:sequence:track_id
 ```python
 device_id = "edge-01"
 camera_id = "front-door"
-capture_timestamp = datetime(2026, 1, 15, 14, 30, 0, tzinfo=UTC)
+capture_timestamp = datetime(2026, 1, 15, 14, 30, 0, tzinfo=IST)
 sequence_number = 42
 track_id = "person-alice"  # (from payload)
 ```
 
 **Canonical Form**:
 ```
-edge-01:front-door:2026-01-15T14:30:00+00:00:0000000042:person-alice
+edge-01:front-door:2026-01-15T14:30:00+05:30:0000000042:person-alice
 ```
 
 **SHA-256 Hash**:
@@ -236,7 +236,7 @@ When the same detection is recreated with identical attributes, the event_id rem
 # First occurrence
 event_id_1 = generate_event_id(
     "edge-01", "cam-front",
-    datetime(2026, 1, 15, 14, 30, 0, tzinfo=UTC),
+    datetime(2026, 1, 15, 14, 30, 0, tzinfo=IST),
     sequence=1
 )
 # event_id_1 = "a7f3c1e8..."
@@ -244,7 +244,7 @@ event_id_1 = generate_event_id(
 # Recreate with same parameters
 event_id_2 = generate_event_id(
     "edge-01", "cam-front",
-    datetime(2026, 1, 15, 14, 30, 0, tzinfo=UTC),
+    datetime(2026, 1, 15, 14, 30, 0, tzinfo=IST),
     sequence=1
 )
 # event_id_2 = "a7f3c1e8..." (identical)
@@ -254,12 +254,12 @@ assert event_id_1 == event_id_2  # ✓ Deterministic
 
 ### Timestamp Normalization
 
-Timestamps are normalized to UTC with second precision (microseconds removed):
+Timestamps are normalized to IST with second precision (microseconds removed):
 
 ```python
 # Same second, different microseconds → same event_id
-timestamp_1 = datetime(2026, 1, 15, 14, 30, 0, 0, tzinfo=UTC)
-timestamp_2 = datetime(2026, 1, 15, 14, 30, 0, 500000, tzinfo=UTC)
+timestamp_1 = datetime(2026, 1, 15, 14, 30, 0, 0, tzinfo=IST)
+timestamp_2 = datetime(2026, 1, 15, 14, 30, 0, 500000, tzinfo=IST)
 
 event_id_1 = generate_event_id("edge-01", "cam-front", timestamp_1, 1)
 event_id_2 = generate_event_id("edge-01", "cam-front", timestamp_2, 1)
@@ -272,17 +272,16 @@ assert event_id_1 == event_id_2  # ✓ Same second = same ID
 Events captured in different timezones at same moment produce same ID:
 
 ```python
-# UTC timestamp
+# IST timestamp
+ts_ist = datetime(2026, 1, 15, 18, 0, 0, tzinfo=IST)
+
+# Same moment in UTC
 ts_utc = datetime(2026, 1, 15, 12, 30, 0, tzinfo=timezone.utc)
 
-# Same moment in IST (UTC+5:30)
-ist = timezone(timedelta(hours=5, minutes=30))
-ts_ist = datetime(2026, 1, 15, 18, 0, 0, tzinfo=ist)
-
-event_id_utc = generate_event_id("edge-01", "cam-front", ts_utc, 1)
 event_id_ist = generate_event_id("edge-01", "cam-front", ts_ist, 1)
+event_id_utc = generate_event_id("edge-01", "cam-front", ts_utc, 1)
 
-assert event_id_utc == event_id_ist  # ✓ Same moment = same ID
+assert event_id_ist == event_id_utc  # ✓ Same moment = same ID
 ```
 
 ---

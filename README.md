@@ -98,7 +98,6 @@ Run these from inside the `facial_recognition/` folder:
 Run these from inside the `facial_recognition/` folder:
 - **`python main_cpu.py`**: Runs the highly-optimized camera script tuned for laptops/CPUs (skips frames, limits threads).
 - **`python run.py`**: The standard camera execution script, best used with a dedicated NVIDIA GPU.
-- **`python benchmark_detector.py`**: Tests your webcam and prints out the FPS and latency of the AI models.
 
 ### 3. Running the Distributed System
 - **`python facial_recognition/pc_frame_sender.py`**: Sends frames from local PC to remote detection service (see GET_STARTED.md for setup)

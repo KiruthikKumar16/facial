@@ -50,14 +50,14 @@ yaml: Any = yaml
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-from capture import CameraCapture
-from detector import InsightFaceDetector  # type: ignore[reportMissingImports]
-from logger import DetectionLogger
-from recognizer import Recognizer
-from pending import PendingSaver
-from cli import parse_run_args, resolve_camera_size, resolve_det_size, resolve_model
-from overlay import draw_text_block
-from edge_stream import EdgeFramePublisher
+from facial_recognition.capture import CameraCapture
+from facial_recognition.detector import InsightFaceDetector  # type: ignore[reportMissingImports]
+from facial_recognition.logger import DetectionLogger
+from facial_recognition.recognizer import Recognizer
+from facial_recognition.pending import PendingSaver
+from facial_recognition.cli import parse_run_args, resolve_camera_size, resolve_det_size, resolve_model
+from facial_recognition.overlay import draw_text_block
+from facial_recognition.edge_stream import EdgeFramePublisher
 from collections import deque
 
 
@@ -102,7 +102,7 @@ class CpuCameraPipeline:
         self.use_tracker = bool(use_tracker)
         self.quality_assessor = quality_assessor
         self.camera_config_manager = camera_config_manager
-        from track_fusion import TemporalTrackManager
+        from facial_recognition.track_fusion import TemporalTrackManager
         
         # Apply camera-specific profile if available
         profile = None
@@ -328,7 +328,7 @@ class CpuCameraPipeline:
             y_scale = fh / sh
             
             frame_observations = []
-            from track_fusion import FaceObservation
+            from facial_recognition.track_fusion import FaceObservation
             
             for face in detections:
                 l, t, r, b = face['bbox']
@@ -362,6 +362,8 @@ class CpuCameraPipeline:
                     quality_category=quality_category,
                     confidence=float(face.get('det_score', 1.0)),
                     embedding=emb,
+                    gender=face.get('gender'),
+                    age=face.get('age')
                 )
                 frame_observations.append(obs)
 
@@ -393,6 +395,8 @@ class CpuCameraPipeline:
                             full_bbox, 
                             fused_id, 
                             float(fused_conf), 
+                            age=obs.age,
+                            gender=obs.gender,
                             quality_score=obs.quality_score,
                             embedding=obs.embedding,
                             config_version=cfg_ver,
@@ -543,7 +547,7 @@ def main():
 
     # detector and recognizer
     if remote_enabled:
-        from remote_detector import RemoteInsightFaceDetector
+        from facial_recognition.remote_detector import RemoteInsightFaceDetector
         detector: Any = RemoteInsightFaceDetector(
             endpoint=remote_cfg.get('endpoint', 'http://localhost:8000/detect'),
             det_size=tuple(remote_cfg.get('det_size', [det_w, det_h])),
@@ -573,7 +577,7 @@ def main():
 
     rec_interval = int(cfg.get('cpu_recognition_interval', 2))
     pipelines: List[CpuCameraPipeline] = []
-    from quality import FaceQualityAssessor
+    from facial_recognition.quality import FaceQualityAssessor
     quality_assessor = FaceQualityAssessor(cfg.get('quality_thresholds', {}))
 
     for cam_id, src in build_sources(cfg, options.webcam_index):

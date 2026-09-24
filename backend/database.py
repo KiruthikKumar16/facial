@@ -3,18 +3,35 @@ import logging
 import os
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import declarative_base, sessionmaker
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 db_url = os.environ.get("DATABASE_URL") or settings.database_url
+# Automatically use Supabase Transaction Mode Pooler (port 6543) if using a pooler URL
+# to bypass the 15-connection strict limit on port 5432.
+if ".pooler.supabase.com:5432" in db_url:
+    db_url = db_url.replace(".pooler.supabase.com:5432", ".pooler.supabase.com:6543")
+
 try:
     engine = create_engine(
         db_url,
         echo=settings.debug,
-        poolclass=NullPool,
+        pool_size=20,
+        max_overflow=20,
+        pool_timeout=30,
+        pool_pre_ping=True,  # Help recover stale connections
+        connect_args={"prepare_threshold": None},  # Disable prepared statements for pgBouncer transaction mode
     )
+    
+    @event.listens_for(engine, "connect")
+    def set_timezone(dbapi_conn, connection_record):
+        if engine.dialect.name == "postgresql":
+            cursor = dbapi_conn.cursor()
+            cursor.execute("SET TIMEZONE='Asia/Kolkata'")
+            cursor.close()
+            
     # Validate connection driver availability
     engine.dialect.dbapi
 except Exception as e:

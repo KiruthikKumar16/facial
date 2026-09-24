@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Indian Standard Time (IST) timezone - UTC+5:30
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _find_root_env() -> Path | None:

@@ -1,12 +1,12 @@
 """SQLAlchemy ORM models for facial recognition system."""
-from datetime import datetime, timezone
+from datetime import datetime
+from config import IST
 
-def utc_now():
-    return datetime.now(timezone.utc)
+def ist_now():
+    return datetime.now(IST)
 
 from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, Text, Enum as SQLEnum, TypeDecorator
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import ARRAY
 from database import Base
 import enum
 
@@ -18,7 +18,8 @@ try:
 
     def Vector(dim: int):
         return _PGVector(dim)
-except Exception:  # pragma: no cover - local dev fallback
+except Exception as e:  # pragma: no cover - local dev fallback
+    print("FAILED TO IMPORT PGVECTOR IN MODELS:", e)
     class Vector(TypeDecorator):
         impl = Text
         cache_ok = True
@@ -106,10 +107,10 @@ class Camera(Base):
     fps = Column(Float, default=0.0)
     gpu_load = Column(Float, default=0.0)
     cpu_load = Column(Float, default=0.0)
-    last_heartbeat = Column(DateTime, default=utc_now)
+    last_heartbeat = Column(DateTime, default=ist_now)
     detections_today = Column(Integer, default=0)
-    created_at = Column(DateTime, default=utc_now)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
     
     # Relationships
     detections = relationship("Detection", back_populates="camera")
@@ -129,10 +130,10 @@ class Profile(Base):
     department = Column(String)
     embedding_status = Column(SQLEnum(EmbeddingStatus), default=EmbeddingStatus.pending)
     embedding_count = Column(Integer, default=0)
-    enrolled_at = Column(DateTime, default=utc_now)
+    enrolled_at = Column(DateTime, default=ist_now)
     last_seen = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=utc_now)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
     
     # Relationships
     embeddings = relationship("Embedding", back_populates="profile", cascade="all, delete-orphan")
@@ -148,7 +149,7 @@ class Embedding(Base):
     profile_id = Column(String, ForeignKey("profiles.id"), nullable=False, index=True)
     vector = Column(Vector(512), nullable=False)
     model_version = Column(String, nullable=False, default="w600k_mbf_v1", index=True)
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime, default=ist_now)
     
     # Relationships
     profile = relationship("Profile", back_populates="embeddings")
@@ -187,7 +188,7 @@ class Detection(Base):
     algorithm_version = Column(String, nullable=True, default="temporal_fusion_v2")
     version_bundle_hash = Column(String, nullable=True, index=True)
     
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime, default=ist_now)
     
     # Relationships
     camera = relationship("Camera", back_populates="detections")
@@ -205,8 +206,8 @@ class UnregisteredSubject(Base):
     representative_embedding = Column(Vector(512), nullable=False)
     similarity_threshold = Column(Float, nullable=False, default=0.35)
     status = Column(String, nullable=False, default="active")
-    created_at = Column(DateTime, default=utc_now)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
     detections = relationship("Detection", backref="unregistered_subject")
 
 
@@ -230,7 +231,7 @@ class EventProvenance(Base):
     decision_timestamp = Column(DateTime, nullable=False)
     sync_event_id = Column(String, nullable=True)
     provenance_chain_hash = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime, default=ist_now)
 
     # Relationships
     detection = relationship("Detection", back_populates="provenance")
@@ -250,7 +251,7 @@ class CameraConfig(Base):
     sampling_rate = Column(Integer, default=1) # Frame skip / process interval
     temporal_window = Column(Float, default=3.0) # Temporal window in seconds
     notes = Column(String, nullable=True)
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime, default=ist_now)
 
     # Relationships
     camera = relationship("Camera", back_populates="configs")
@@ -268,8 +269,8 @@ class Alert(Base):
     severity = Column(String)  # critical, high, medium
     reason = Column(String)
     acknowledged = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=utc_now)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
     
     # Relationships
     camera = relationship("Camera", back_populates="alerts")
@@ -292,7 +293,7 @@ class CameraTransition(Base):
     similarity = Column(Float, nullable=True)
     temporal_score = Column(Float, nullable=True)
     reasoning_metadata = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime, default=ist_now)
 
     profile = relationship("Profile")
     from_camera = relationship("Camera", foreign_keys=[from_camera_id], back_populates="outgoing_transitions")
@@ -307,8 +308,8 @@ class ModelThreshold(Base):
     name = Column(String, nullable=False, unique=True)
     value = Column(Float, nullable=False)
     description = Column(String)
-    created_at = Column(DateTime, default=utc_now)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
 
 
 class SequenceAcknowledgment(Base):
@@ -320,8 +321,8 @@ class SequenceAcknowledgment(Base):
     camera_id = Column(String, nullable=False, index=True)
     last_acknowledged_sequence = Column(Integer, nullable=False, default=0)
     last_synced_event_id = Column(String, ForeignKey("detections.event_id"), nullable=True)
-    last_updated = Column(DateTime, default=utc_now, onupdate=utc_now)
-    created_at = Column(DateTime, default=utc_now)
+    last_updated = Column(DateTime, default=ist_now, onupdate=ist_now)
+    created_at = Column(DateTime, default=ist_now)
     
     # Composite unique constraint: device + camera pair
     # (implemented via indexes in database)

@@ -123,3 +123,10 @@
     transparent 3px
   );
 }
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+

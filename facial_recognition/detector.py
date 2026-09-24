@@ -8,7 +8,6 @@ import logging
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 
 from insightface.app import FaceAnalysis  # type: ignore[reportMissingTypeStubs]
 from insightface.app.common import Face
@@ -57,7 +56,7 @@ class InsightFaceDetector:
             
             ort.InferenceSession.__init__ = _optimized_init
             
-            self.app: Any = FaceAnalysis(name=model_name, providers=providers, allowed_modules=['detection', 'recognition'])
+            self.app: Any = FaceAnalysis(name=model_name, providers=providers, allowed_modules=['detection', 'recognition', 'genderage'])
             self.app.prepare(ctx_id=0 if use_gpu else -1, det_size=det_size)
         finally:
             ort.InferenceSession.__init__ = _orig_init
@@ -127,6 +126,7 @@ class InsightFaceDetector:
             try:
                 faces = cast(List[Any], self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30)))
             except Exception:
+                logger.exception("Haar cascade error")
                 faces = []
             haar_dur = (time.perf_counter() - haar_start) * 1000.0
             logger.debug('Haar found %d candidates in %.2f ms', len(faces), haar_dur)
@@ -172,6 +172,14 @@ class InsightFaceDetector:
         if 'recognition' not in self.app.models:
             return None
         face = Face(bbox=np.array(face_dict['bbox']), kps=face_dict.get('kps'))
+        
+        if 'genderage' in self.app.models:
+            self.app.models['genderage'].get(frame, face)
+            if hasattr(face, 'sex') and face.sex is not None:
+                face_dict['gender'] = "male" if face.sex == "M" else "female" if face.sex == "F" else "unknown"
+            if hasattr(face, 'age') and face.age is not None:
+                face_dict['age'] = int(face.age)
+                
         self.app.models['recognition'].get(frame, face)
         if face.embedding is None:
             return None

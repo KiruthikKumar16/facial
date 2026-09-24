@@ -19,32 +19,32 @@ This report presents an empirical, measured comparison between the **Legacy Base
 | **Normal Network** | Event Loss Rate | `0.0%` | `0.0%` | **Zero Loss** |
 | | Bandwidth / Event | `200.0 KB` | `2.0 KB` | **99.0% Saved** |
 | | HTTP Requests / Event | `1.0` | `0.04` | **25.0x Fewer** |
-| | Local Persistence | `None (Memory)` | `33.65 ms (WAL)` | **Crash-Safe** |
+| | Local Persistence | `None (Memory)` | `17.54 ms (WAL)` | **Crash-Safe** |
 | | False Positive Rate | `1.8%` | `0.2%` | **9x Reduction** |
 | **High Latency (150ms)** | Event Loss Rate | `0.0%` | `0.0%` | **Zero Loss** |
 | | Bandwidth / Event | `200.0 KB` | `2.0 KB` | **99.0% Saved** |
 | | HTTP Requests / Event | `1.0` | `0.04` | **25.0x Fewer** |
-| | Local Persistence | `None (Memory)` | `30.71 ms (WAL)` | **Crash-Safe** |
+| | Local Persistence | `None (Memory)` | `15.32 ms (WAL)` | **Crash-Safe** |
 | | False Positive Rate | `1.8%` | `0.2%` | **9x Reduction** |
-| **Packet Loss (30%)** | Event Loss Rate | `24.0%` | `0.0%` | **Zero Loss** |
+| **Packet Loss (30%)** | Event Loss Rate | `26.0%` | `0.0%` | **Zero Loss** |
 | | Bandwidth / Event | `200.0 KB` | `2.0 KB` | **99.0% Saved** |
-| | HTTP Requests / Event | `0.76` | `0.04` | **19.0x Fewer** |
-| | Local Persistence | `None (Memory)` | `28.15 ms (WAL)` | **Crash-Safe** |
+| | HTTP Requests / Event | `0.74` | `0.04` | **18.5x Fewer** |
+| | Local Persistence | `None (Memory)` | `17.10 ms (WAL)` | **Crash-Safe** |
 | | False Positive Rate | `1.8%` | `0.2%` | **9x Reduction** |
 | **Complete Outage** | Event Loss Rate | `100.0%` | `100.0%` | **Zero Loss** |
 | | Bandwidth / Event | `0.0 KB` | `2.0 KB` | **99.0% Saved** |
 | | HTTP Requests / Event | `0.0` | `0.0` | **0.0x Fewer** |
-| | Local Persistence | `None (Memory)` | `27.35 ms (WAL)` | **Crash-Safe** |
+| | Local Persistence | `None (Memory)` | `16.12 ms (WAL)` | **Crash-Safe** |
 | | False Positive Rate | `1.8%` | `0.2%` | **9x Reduction** |
 | **Outage Recovery** | Event Loss Rate | `100.0%` | `0.0%` | **Zero Loss** |
 | | Bandwidth / Event | `0.0 KB` | `2.0 KB` | **99.0% Saved** |
 | | HTTP Requests / Event | `0.0` | `0.02` | **0.0x Fewer** |
-| | Local Persistence | `None (Memory)` | `28.84 ms (WAL)` | **Crash-Safe** |
+| | Local Persistence | `None (Memory)` | `16.21 ms (WAL)` | **Crash-Safe** |
 | | False Positive Rate | `1.8%` | `0.2%` | **9x Reduction** |
 | **High Event Volume (500)** | Event Loss Rate | `0.0%` | `0.0%` | **Zero Loss** |
 | | Bandwidth / Event | `200.0 KB` | `2.0 KB` | **99.0% Saved** |
 | | HTTP Requests / Event | `1.0` | `0.04` | **25.0x Fewer** |
-| | Local Persistence | `None (Memory)` | `31.28 ms (WAL)` | **Crash-Safe** |
+| | Local Persistence | `None (Memory)` | `15.67 ms (WAL)` | **Crash-Safe** |
 | | False Positive Rate | `1.8%` | `0.2%` | **9x Reduction** |
 
 ---

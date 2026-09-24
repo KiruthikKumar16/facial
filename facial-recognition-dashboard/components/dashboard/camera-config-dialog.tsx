@@ -149,7 +149,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={99}
                   step={1}
-                  onValueChange={([v]) => setDraft({ ...draft, detectionThreshold: v / 100 })}
+                  onValueChange={(v: any) => setDraft({ ...draft, detectionThreshold: (v[0] ?? v) / 100 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Minimum face detector confidence score</p>
               </div>
@@ -165,7 +165,7 @@ export function CameraConfigDialog({
                   min={20}
                   max={99}
                   step={1}
-                  onValueChange={([v]) => setDraft({ ...draft, recognitionThreshold: v / 100 })}
+                  onValueChange={(v: any) => setDraft({ ...draft, recognitionThreshold: (v[0] ?? v) / 100 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Minimum cosine similarity to confirm identity match</p>
               </div>
@@ -181,7 +181,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={100}
                   step={1}
-                  onValueChange={([v]) => setDraft({ ...draft, qualityThreshold: v })}
+                  onValueChange={(v: any) => setDraft({ ...draft, qualityThreshold: (v[0] ?? v) })}
                 />
                 <p className="text-[11px] text-muted-foreground">Minimum face sharpness/pose score to accept frame embedding</p>
               </div>
@@ -197,7 +197,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={100}
                   step={5}
-                  onValueChange={([v]) => setDraft({ ...draft, samplingRate: v / 100 })}
+                  onValueChange={(v: any) => setDraft({ ...draft, samplingRate: (v[0] ?? v) / 100 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Edge processing frame stride (1.0 = full stream)</p>
               </div>
@@ -213,7 +213,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={100}
                   step={5}
-                  onValueChange={([v]) => setDraft({ ...draft, temporalWindow: v / 10 })}
+                  onValueChange={(v: any) => setDraft({ ...draft, temporalWindow: (v[0] ?? v) / 10 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Observation window for quality-weighted identity aggregation</p>
               </div>

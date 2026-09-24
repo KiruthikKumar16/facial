@@ -28,10 +28,11 @@ Guarantees:
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple, Optional, Set
+from typing import Dict, Tuple, Optional
 import logging
+from backend.config import IST
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,7 @@ class SequenceManager:
                 should_close = True
             
             cursor = connection.cursor()
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(IST).isoformat()
             
             # Upsert: update if exists, insert if not
             cursor.execute("""
@@ -601,7 +602,7 @@ class SequenceManager:
         try:
             conn = sqlite3.connect(str(self.db_path), timeout=self.timeout)
             cursor = conn.cursor()
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(IST).isoformat()
             
             cursor.execute("""
                 INSERT INTO sequence_audit

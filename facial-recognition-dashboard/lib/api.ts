@@ -768,6 +768,15 @@ export const fetchTrajectory = async (
   }
 }
 
+/** Format a Date as an IST ISO string (with +05:30 offset) instead of UTC. */
+function toISTISOString(date: Date): string {
+  // IST is UTC+5:30
+  const istOffsetMs = 5.5 * 60 * 60 * 1000
+  const istDate = new Date(date.getTime() + istOffsetMs)
+  const iso = istDate.toISOString().replace('Z', '+05:30')
+  return iso
+}
+
 export const fetchFootfall = async (
   days?: number,
   date_from?: Date,
@@ -780,11 +789,11 @@ export const fetchFootfall = async (
   }
 
   if (date_from !== undefined) {
-    params.append('date_from', date_from.toISOString())
+    params.append('date_from', toISTISOString(date_from))
   }
 
   if (date_to !== undefined) {
-    params.append('date_to', date_to.toISOString())
+    params.append('date_to', toISTISOString(date_to))
   }
 
   const qs = params.toString() ? `?${params.toString()}` : ''
@@ -809,8 +818,12 @@ export const fetchFootfall = async (
 }
 
 
-export const fetchGenderDistribution = async (): Promise<DemographicSlice[]> => {
-  const response = await fetch(apiUrl('/api/analytics/gender-distribution'))
+export const fetchGenderDistribution = async (dateFrom?: string, dateTo?: string): Promise<DemographicSlice[]> => {
+  const params = new URLSearchParams()
+  if (dateFrom) params.append('date_from', dateFrom)
+  if (dateTo) params.append('date_to', dateTo)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  const response = await fetch(apiUrl(`/api/analytics/gender-distribution${query}`))
   const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.distribution ?? raw?.slices ?? []
@@ -830,11 +843,23 @@ export const fetchGenderDistribution = async (): Promise<DemographicSlice[]> => 
   }
 }
 
-export const fetchAttendance = async (days?: number): Promise<AttendanceRecord[]> => {
-  const qs =
-    days !== undefined
-      ? `?days=${encodeURIComponent(String(days))}`
-      : ''
+export const fetchAttendance = async (
+  days?: number,
+  date_from?: Date,
+  date_to?: Date
+): Promise<AttendanceRecord[]> => {
+  const params = new URLSearchParams()
+  if (days !== undefined) {
+    params.append('days', String(days))
+  }
+  if (date_from !== undefined) {
+    params.append('date_from', toISTISOString(date_from))
+  }
+  if (date_to !== undefined) {
+    params.append('date_to', toISTISOString(date_to))
+  }
+  
+  const qs = params.toString() ? `?${params.toString()}` : ''
   const response = await fetch(apiUrl(`/api/analytics/attendance${qs}`))
   const raw = await handleResponse<any>(response)
   try {
@@ -889,7 +914,8 @@ export const saveThresholds = async (
 // ==================== Forensic Search ====================
 
 export type ForensicSearchPayload = {
-  imageFile: File
+  imageFile?: File
+  profileId?: string
   threshold?: number
   from?: string
   to?: string
@@ -904,7 +930,12 @@ export const runForensicSearch = async (
   payload: ForensicSearchPayload,
 ): Promise<ForensicMatch[]> => {
   const formData = new FormData()
-  formData.append('image', payload.imageFile)
+  if (payload.imageFile) {
+    formData.append('image', payload.imageFile)
+  }
+  if (payload.profileId) {
+    formData.append('profile_id', payload.profileId)
+  }
   if (payload.threshold !== undefined) {
     formData.append('threshold', String(payload.threshold))
   }
@@ -970,8 +1001,8 @@ export const fetchCameraConfig = async (cameraId: string): Promise<CameraConfigP
   }
 }
 
-export const saveCameraConfig = async (config: CameraConfigProfile): Promise<CameraConfigProfile> => {
-  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(config.cameraId)}/config`), {
+export const saveCameraConfig = async (cameraId: string, config: Partial<CameraConfigProfile>): Promise<CameraConfigProfile> => {
+  const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1004,19 +1035,31 @@ export const saveCameraConfig = async (config: CameraConfigProfile): Promise<Cam
   }
 }
 
-export const rollbackCameraConfig = async (cameraId: string, version: number): Promise<void> => {
+export const rollbackCameraConfig = async (cameraId: string): Promise<CameraConfigProfile> => {
   const response = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/config/rollback`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version }),
   })
-  await handleResponse<any>(response)
+  const raw = await handleResponse<any>(response)
+  return {
+    id: strOrEmpty(raw.id),
+    cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
+    version: numOrZero(raw.version),
+    detectionThreshold: numOrZero(raw.detection_threshold ?? raw.detectionThreshold),
+    recognitionThreshold: numOrZero(raw.recognition_threshold ?? raw.recognitionThreshold),
+    qualityThreshold: numOrZero(raw.quality_threshold ?? raw.qualityThreshold),
+    samplingRate: numOrZero(raw.sampling_rate ?? raw.samplingRate),
+    temporalWindow: numOrZero(raw.temporal_window ?? raw.temporalWindow),
+    isActive: boolOrFalse(raw.is_active ?? raw.isActive),
+    createdAt: strOrEmpty(raw.created_at ?? raw.createdAt),
+    updatedAt: strOrEmpty(raw.updated_at ?? raw.updatedAt) || undefined,
+  }
 }
 
 // ==================== Lineage & Provenance ====================
 
 export const fetchProvenance = async (eventId: string): Promise<RecognitionProvenance> => {
-  const response = await fetch(apiUrl(`/api/provenance/${encodeURIComponent(eventId)}`))
+  const response = await fetch(apiUrl(`/api/detections/${encodeURIComponent(eventId)}/provenance`))
   const raw = await handleResponse<any>(response)
   try {
     // Simplified adaptation - in reality this would be more complex
@@ -1066,15 +1109,15 @@ export const fetchProvenance = async (eventId: string): Promise<RecognitionProve
 export function adaptUnregisteredSubject(raw: any): UnregisteredSubject {
   return {
     id: strOrEmpty(raw.id),
-    displayName: strOrEmpty(raw.displayName ?? raw.name ?? ''),
-    captureCount: numOrZero(raw.captureCount),
-    firstSeen: strOrEmpty(raw.firstSeen),
-    lastSeen: strOrEmpty(raw.lastSeen),
+    displayName: strOrEmpty(raw.display_name ?? raw.displayName ?? raw.name ?? ''),
+    captureCount: numOrZero(raw.capture_count ?? raw.captureCount),
+    firstSeen: strOrEmpty(raw.first_seen ?? raw.firstSeen),
+    lastSeen: strOrEmpty(raw.last_seen ?? raw.lastSeen),
     cameras: Array.isArray(raw.cameras) ? raw.cameras : typeof raw.cameras === 'string' ? [raw.cameras] : [],
-    bestConfidence: numOrZero(raw.bestConfidence),
-    representativeFingerprint: strOrEmpty(raw.representativeFingerprint ?? raw.fingerprint ?? ''),
-    vectorDimension: numOrZero(raw.vectorDimension),
-    eventIds: Array.isArray(raw.eventIds) ? raw.eventIds : [],
+    bestConfidence: numOrZero(raw.best_confidence ?? raw.bestConfidence),
+    representativeFingerprint: strOrEmpty(raw.representative_fingerprint ?? raw.representativeFingerprint ?? raw.fingerprint ?? ''),
+    vectorDimension: numOrZero(raw.vector_dimension ?? raw.vectorDimension),
+    eventIds: Array.isArray(raw.event_ids ?? raw.eventIds) ? (raw.event_ids ?? raw.eventIds) : [],
     status: strOrEmpty(raw.status ?? 'unknown'),
   };
 }
@@ -1220,7 +1263,7 @@ export const fetchNodeHealth = async (): Promise<NodeHealthReport[]> => {
 // ==================== System Info ====================
 
 export const fetchVersionBundle = async (): Promise<VersionBundle> => {
-  const response = await fetch(apiUrl('/api/version'))
+  const response = await fetch(apiUrl('/api/system/version-bundle'))
   const raw = await handleResponse<any>(response)
   try {
     return {

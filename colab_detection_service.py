@@ -17,7 +17,8 @@ from pathlib import Path
 import json
 import numpy as np
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
+from config import IST
 import uuid
 
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +43,7 @@ def create_detection_template() -> Dict[str, Any]:
         "sequence_number": 0,  # Will be incremented per detection
         "camera_id": "webcam",  # Could be made configurable
         "profile_id": None,  # Will be set if recognized
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(IST).isoformat(),
         "status": "unknown",  # Will be set based on recognition
         "confidence": 0.0,
         "bbox": [0, 0, 0, 0],  # [x0, y0, x1, y1]
@@ -85,7 +86,7 @@ async def startup_event():
     try:
         # Use GPU if available, otherwise CPU
         ctx_id = 0 if os.getenv("USE_GPU", "false").lower() == "true" else -1
-        detector_app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider'] if ctx_id == 0 else ['CPUExecutionProvider'])
+        detector_app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider'] if ctx_id == 0 else ['CPUExecutionProvider'], allowed_modules=['detection', 'recognition', 'genderage'])
         detector_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
         logger.info(f"InsightFace model loaded successfully (ctx_id: {ctx_id})")
     except Exception as e:
@@ -265,9 +266,14 @@ async def detect_faces(
             detection["device_id"] = "local_pc"  # Could extract from headers or make configurable
             detection["sequence_number"] = sequence_offset + i
             detection["camera_id"] = "webcam"  # Could extract from headers or make configurable
-            detection["timestamp"] = datetime.now(timezone.utc).isoformat()
+            detection["timestamp"] = datetime.now(IST).isoformat()
             detection["confidence"] = confidence
             detection["bbox"] = [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])]
+            
+            if hasattr(face, 'sex') and face.sex is not None:
+                detection["gender"] = "male" if face.sex == 1 else "female" if face.sex == 0 else "unknown"
+            if hasattr(face, 'age') and face.age is not None:
+                detection["age"] = int(face.age)
 
             if identity is not None:
                 # Recognized face
@@ -324,7 +330,7 @@ async def detect_faces(
         # Return detection results
         return JSONResponse(content={
             "detections": detections,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "processed_at": datetime.now(IST).isoformat(),
             "frame_shape": list(img.shape) if img is not None else [0, 0, 0]
         })
 

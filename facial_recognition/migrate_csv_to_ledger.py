@@ -14,10 +14,10 @@ Usage:
 """
 
 import argparse
-import csv
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime
+from backend.config import IST
 from pathlib import Path
 
 from facial_recognition.event_ledger import EventLedger, EventLedgerMigrator
@@ -61,7 +61,7 @@ def migrate(csv_dir: str, db_path: str, backup: bool = True) -> None:
         backup_dir = csv_path / "backup"
         backup_dir.mkdir(exist_ok=True)
         for csv_file in csv_files:
-            backup_file = backup_dir / f"{csv_file.name}.bak-{datetime.now().timestamp()}"
+            backup_file = backup_dir / f"{csv_file.name}.bak-{datetime.now(IST).timestamp()}"
             shutil.copy2(csv_file, backup_file)
             logger.info(f"Backed up {csv_file.name} to {backup_file}")
     

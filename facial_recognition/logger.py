@@ -16,13 +16,18 @@ Event lifecycle:
 
 import csv
 import os
+import sys
 import threading
 import queue
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
-from uuid import uuid4
+from typing import Optional, Tuple, Any
+
+# Add the parent directory to the system path to allow importing from backend
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from backend.config import IST
 
 try:
     from .event_ledger import EventLedger, EventLedgerMigrator
@@ -185,7 +190,7 @@ class DetectionLogger:
         Returns:
             event_id: Unique event identifier, or None if deduplicated
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(IST)
         now_ts = now.timestamp()
         date_str = now.strftime('%Y-%m-%d')
 
@@ -307,11 +312,11 @@ class DetectionLogger:
     def _worker_loop(self) -> None:
         """Background thread for cloud sync with retry logic."""
         import urllib.request
-        from urllib.error import HTTPError, URLError
+        from urllib.error import HTTPError
         import json
         import time
         import random
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         api_url = os.environ.get("API_URL", "http://localhost:1223").rstrip('/')
         api_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
@@ -456,7 +461,7 @@ class DetectionLogger:
                         backoff = min(max_backoff, base_backoff * (2 ** retry_count))
                         jitter = random.uniform(0, backoff * 0.1)
                         wait_time = backoff + jitter
-                        next_retry = (datetime.now(timezone.utc) + timedelta(seconds=wait_time)).isoformat()
+                        next_retry = (datetime.now(IST) + timedelta(seconds=wait_time)).isoformat()
                         
                         self.ledger.transition_state(
                             event_id, 

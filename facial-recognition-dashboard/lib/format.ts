@@ -16,7 +16,10 @@ export const toneGradient: Record<string, string> = {
 
 export function formatTime(iso: string | undefined | null): string {
   if (!iso) return '—'
-  const d = new Date(iso)
+  // Handle strings like "2026-09-24T08:15:59.324032" safely
+  const cleanIso = iso.split('.')[0]
+  let d = new Date(cleanIso)
+  if (isNaN(d.getTime())) d = new Date(iso)
   if (isNaN(d.getTime())) return '—'
   return d.toLocaleTimeString('en-IN', {
     hour: '2-digit',
@@ -29,7 +32,9 @@ export function formatTime(iso: string | undefined | null): string {
 
 export function formatClock(iso: string | undefined | null): string {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const cleanIso = iso.split('.')[0]
+  let d = new Date(cleanIso)
+  if (isNaN(d.getTime())) d = new Date(iso)
   if (isNaN(d.getTime())) return '—'
   return d.toLocaleTimeString('en-IN', {
     hour: '2-digit',

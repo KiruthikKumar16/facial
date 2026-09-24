@@ -23,14 +23,11 @@ Simulates 16 real-world failure scenarios:
 from __future__ import annotations
 
 import enum
-import json
 import logging
-import os
 import random
-import shutil
 import sqlite3
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 

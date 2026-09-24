@@ -5,9 +5,7 @@ Optionally draws detection results locally for preview.
 """
 import cv2
 import requests
-import json
 import time
-from pathlib import Path
 import numpy as np
 from typing import Optional, Dict, Any
 import logging
@@ -124,14 +122,13 @@ class PCFrameSender:
     def _send_frame(self, frame_bytes: bytes) -> Optional[Dict[str, Any]]:
         """Send frame to remote detection service and return results."""
         headers = {
-            "X-API-Key": self.api_key,
-            "Content-Type": "image/jpeg"
+            "X-API-Key": self.api_key
         }
         try:
             start_time = time.time()
             response = requests.post(
                 f"{self.remote_url}/detect",
-                data=frame_bytes,
+                files={'file': ('frame.jpg', frame_bytes, 'image/jpeg')},
                 headers=headers,
                 timeout=10  # 10 second timeout
             )
@@ -282,8 +279,8 @@ class PCFrameSender:
 def main():
     """Example usage - replace with your actual configuration."""
     # IMPORTANT: Replace these with your actual values
-    REMOTE_URL = "https://your-colab-tunnel.ngrok.io"  # e.g., https://xxxx.ngrok.io
-    API_KEY = "your-edge-api-key-here"  # Must match what your Colab service expects
+    REMOTE_URL = "https://finished-hug-dwelled.ngrok-free.dev"  # e.g., https://xxxx.ngrok.io
+    API_KEY = "kk1223"  # Must match what your Colab service expects
 
     # You can also load from config file or environment variables
     sender = PCFrameSender(
@@ -294,7 +291,7 @@ def main():
         # rtsp_urls=["rtsp://192.168.1.73:8080/h264.sdp"],  # if using RTSP
         frame_width=640,
         frame_height=640,
-        fps=5,  # Adjust based on your network and Colab performance
+        fps=60,  # Adjust based on your network and Colab performance
         show_preview=True,
         preview_width=640,
         preview_height=480
