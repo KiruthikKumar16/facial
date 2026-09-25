@@ -3,9 +3,21 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ErrorBoundary } from '@/components/error-boundary'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { usePathname } from 'next/navigation'
 
 export function Providers({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname()
+
+  useEffect(() => {
+    if (pathname !== '/login') {
+      const token = localStorage.getItem('sentinel_token')
+      if (!token) {
+        window.location.href = '/login'
+      }
+    }
+  }, [pathname])
+
   const [client] = useState(
     () =>
       new QueryClient({

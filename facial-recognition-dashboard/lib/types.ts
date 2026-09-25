@@ -252,7 +252,7 @@ export interface ProvenanceCandidate {
 export interface ProvenanceStage {
   stage: string
   timestamp: string
-  metadata: Record<string, any>
+  metadata: Record<string, unknown>
 }
 
 export interface RecognitionProvenance {

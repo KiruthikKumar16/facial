@@ -126,7 +126,7 @@ function Chip({ active, onClick, children, className }: { active: boolean, onCli
 
 function getRangeDates(range: string) {
   const now = new Date()
-  let from = new Date()
+  const from = new Date()
   if (range === '1h') from.setHours(now.getHours() - 1)
   else if (range === '6h') from.setHours(now.getHours() - 6)
   else if (range === '24h') from.setHours(now.getHours() - 24)

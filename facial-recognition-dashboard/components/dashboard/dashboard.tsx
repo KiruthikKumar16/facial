@@ -37,14 +37,14 @@ export function Dashboard() {
       if (data && data.id) {
         try {
           const newLog = adaptFaceLog(data)
-          queryClient.setQueryData(['face-logs'], (oldData: any) => {
+          queryClient.setQueryData(['face-logs'], (oldData: unknown) => {
             if (!oldData) return [newLog]
             return [newLog, ...oldData].slice(0, 100)
           })
           
           if (newLog.status === 'unknown') {
             const newUnknown = adaptUnknownCapture(data)
-            queryClient.setQueryData(['unknown-captures'], (oldData: any) => {
+            queryClient.setQueryData(['unknown-captures'], (oldData: unknown) => {
               if (!oldData) return [newUnknown]
               return [newUnknown, ...oldData].slice(0, 100)
             })

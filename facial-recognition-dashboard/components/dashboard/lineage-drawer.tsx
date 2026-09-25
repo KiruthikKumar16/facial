@@ -81,7 +81,7 @@ export function LineageDrawer({
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-center">
               <AlertTriangle className="mx-auto size-6 text-destructive mb-2" />
               <p className="text-sm font-semibold text-destructive">Failed to load provenance record</p>
-              <p className="text-xs text-muted-foreground mt-1">{(error as any)?.message || 'Record not found'}</p>
+              <p className="text-xs text-muted-foreground mt-1">{(error as unknown)?.message || 'Record not found'}</p>
             </div>
           )}
 

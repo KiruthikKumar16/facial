@@ -153,6 +153,10 @@ class _Settings:
     @property
     def enable_edge_pipelines(self) -> bool:
         return _parse_bool(_get("ENABLE_EDGE_PIPELINES", "False"), False)
+        
+    @property
+    def redis_url(self) -> str:
+        return _get("REDIS_URL", "")
 
     @property
     def unregistered_similarity_threshold(self) -> float:

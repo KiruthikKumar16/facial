@@ -542,7 +542,7 @@ function isSameDay(date1: Date, date2: Date): boolean {
 // Helper function to parse timestamp string to Date object, handling local time format
 function parseTimestampToDate(timestamp: string): Date {
   // Try parsing as ISO format first (with T and/or Z)
-  let date = new Date(timestamp)
+  const date = new Date(timestamp)
 
   // If that gives a valid date and the year is not 1970 (indicating time-only string),
   // return it directly
@@ -630,7 +630,7 @@ function DemographicPie({
               <RTooltip
                 contentStyle={tooltipStyle}
                 itemStyle={{ color: 'var(--foreground)' }}
-                formatter={(value: any, name: any) => {
+                formatter={(value: unknown, name: unknown) => {
                   if (totalDetections === 0) return ["0 detections (0%)", String(name)];
                   const val = Number(value) || 0;
                   return [

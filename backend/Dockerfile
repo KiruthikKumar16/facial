@@ -13,9 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/ .
-COPY facial_recognition/ /facial_recognition
+COPY backend/ ./backend/
+COPY facial_recognition/ ./facial_recognition/
+
+ENV PYTHONPATH=/app/backend:/app
 
 EXPOSE 1223
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "1223"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "1223"]

@@ -17,6 +17,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: facial_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: .
@@ -26,12 +38,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/facial_ops
+      REDIS_URL: redis://redis:6379/0
       PORT: 1223
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      SECRET_KEY: dev-secret-key-change-in-production
-      EDGE_API_KEY: dev-edge-api-key
+      SECRET_KEY: ${SECRET_KEY}
+      EDGE_API_KEY: ${EDGE_API_KEY}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       DEBUG: "false"
     ports:
       - "1223:1223"
