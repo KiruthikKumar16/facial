@@ -9,7 +9,7 @@ from config import settings
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # JWT Configuration
-SECRET_KEY = os.environ.get("JWT_SECRET", "super-secret-key-change-in-production")
+SECRET_KEY = os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY") or "super-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 

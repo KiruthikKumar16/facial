@@ -13,6 +13,7 @@ except ImportError:
 
 # Global state for AI models and camera pipelines
 ai_models: Dict[str, Any] = {}
+node_health_store: Dict[str, Dict[str, Any]] = {}
 
 # camera_id -> CameraPipeline
 camera_pipelines: Dict[str, Any] = {}

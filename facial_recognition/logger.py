@@ -27,7 +27,11 @@ from typing import Optional, Tuple, Any
 # Add the parent directory to the system path to allow importing from backend
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from backend.config import IST
+try:
+    from backend.config import IST
+except ImportError:
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
 
 try:
     from .event_ledger import EventLedger, EventLedgerMigrator

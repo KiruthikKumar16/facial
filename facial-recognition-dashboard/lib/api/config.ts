@@ -39,7 +39,14 @@ export async function authFetch(path: string, options?: RequestInit): Promise<Re
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }
-  return fetch(apiUrl(path), { ...options, headers })
+  const res = await fetch(apiUrl(path), { ...options, headers })
+  if (res.status === 401 && typeof window !== 'undefined') {
+    localStorage.removeItem('sentinel_token')
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+  }
+  return res
 }
 
 const VALID_ROLES: ProfileRole[] = [
@@ -61,13 +68,72 @@ export const AVATAR_TONES = [
   'indigo',
 ]
 
+// ── Helper functions for safe data adaptation ──
+
+export function strOrEmpty(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  return String(v)
+}
+
+export function numOrZero(v: unknown): number {
+  if (v === null || v === undefined) return 0
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+export function boolOrFalse(v: unknown): boolean {
+  return v === true || v === 'true' || v === 1 || v === '1'
+}
+
+export function scaleToPercent(v: unknown): number {
+  const n = numOrZero(v)
+  return Math.round(n * 100)
+}
+
+// ── Types used locally ──
+
+export interface NodeHealthReport {
+  nodeId: string
+  hostname?: string
+  status: string
+  cpuPercent: number
+  gpuPercent: number
+  memoryPercent: number
+  temperatureC?: number
+  diskUsagePercent: number
+  diskFreeMb: number
+  cameraFps: number
+  inferenceFps: number
+  networkLatencyMs: number
+  syncQueueLength: number
+  eventBacklog: number
+  recognitionLatencyMs: number
+  runtimeMode: string
+  frameSamplingRate: number
+  syncBatchSize: number
+  syncIntervalSeconds: number
+  reportedAt: string
+}
+
+export interface VersionBundle {
+  detectionModelVersion: string
+  embeddingModelVersion: string
+  galleryVersion: number
+  thresholdVersion: number
+  cameraConfigVersion: number
+  algorithmVersion: string
+  versionBundleHash: string
+  isProductionReady: boolean
+  createdAt: string
+}
+
 export const fetchNodeHealth = async (): Promise<NodeHealthReport[]> => {
   const response = await authFetch('/api/nodes/health')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.nodes ?? []
     return arr
-      .map((item: unknown) => {
+      .map((item: any) => {
         try {
           return {
             nodeId: strOrEmpty(item.node_id ?? item.nodeId),
@@ -105,7 +171,7 @@ export const fetchNodeHealth = async (): Promise<NodeHealthReport[]> => {
 
 export const fetchVersionBundle = async (): Promise<VersionBundle> => {
   const response = await authFetch('/api/system/version-bundle')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return {
       detectionModelVersion: strOrEmpty(raw.detection_model_version ?? raw.detectionModelVersion),
@@ -150,24 +216,3 @@ export function normalizeRole(raw: unknown, fallback: ProfileRole = 'visitor'): 
   if (raw === 'unknown') return fallback
   return fallback
 }
-
-export function strOrEmpty(v: unknown): string {
-  if (v === null || v === undefined) return ''
-  return String(v)
-}
-
-export function numOrZero(v: unknown): number {
-  if (v === null || v === undefined) return 0
-  const n = Number(v)
-  return Number.isFinite(n) ? n : 0
-}
-
-export function boolOrFalse(v: unknown): boolean {
-  return v === true || v === 'true' || v === 1 || v === '1'
-}
-
-export function scaleToPercent(v: unknown): number {
-  const n = numOrZero(v)
-  return Math.round(n * 100)
-}
-

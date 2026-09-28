@@ -11,9 +11,11 @@ import enum
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from backend.config import IST
-from typing import Any, Dict, List, Optional, Tuple
+try:
+    from backend.config import IST
+except ImportError:
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
 
 import numpy as np
 

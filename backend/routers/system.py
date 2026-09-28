@@ -2,16 +2,19 @@
 from fastapi import APIRouter, File, UploadFile, Form, Depends, Query, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, text, case, select, or_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 import uuid
 import json
 
 from database import get_db
 from models import *
+from models import ModelThreshold as DBModelThreshold
 from schemas import *
 from config import settings, IST
 from dependencies import verify_edge_node
+from state import active_version_bundle, node_health_store
+from websocket import manager
 
 router = APIRouter(tags=['System'])
 
@@ -39,22 +42,24 @@ def get_kpis(db: Session = Depends(get_db)):
     unique_profiles = db.query(func.count(func.distinct(Detection.profile_id))).scalar() or 0
     total_profiles = db.query(func.count(Profile.id)).scalar() or 0
     cameras_online = db.query(func.count(Camera.id)).filter(
-        Camera.status == CameraStatusEnum.online
+        Camera.status == CameraStatus.online
     ).scalar() or 0
     critical_alerts = db.query(func.count(Alert.id)).filter(
         Alert.severity == "critical",
         Alert.acknowledged == False
     ).scalar() or 0
     
-    # Today's stats
-    today_start = datetime.combine(today, datetime.min.time())
+    # Today's stats (convert local midnight to UTC naive for DB comparison)
+    today_start_ist = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
+    today_start_utc_naive = today_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    
     recognitions_today = db.query(func.count(Detection.id)).filter(
-        Detection.timestamp >= today_start,
-        Detection.status == DetectionStatusEnum.recognized
+        Detection.timestamp >= today_start_utc_naive,
+        Detection.status == DetectionStatus.recognized
     ).scalar() or 0
     unknowns_today = db.query(func.count(Detection.id)).filter(
-        Detection.timestamp >= today_start,
-        Detection.status == DetectionStatusEnum.unknown
+        Detection.timestamp >= today_start_utc_naive,
+        Detection.status == DetectionStatus.unknown
     ).scalar() or 0
     
     # Average confidence
@@ -140,7 +145,7 @@ def get_thresholds(db: Session = Depends(get_db)):
     }
     
     # Load from DB if available
-    db_thresholds = db.query(ModelThreshold).all()
+    db_thresholds = db.query(DBModelThreshold).all()
     for t in db_thresholds:
         if t.name in thresholds:
             thresholds[t.name] = t.value
@@ -158,11 +163,11 @@ def update_thresholds(
 ):
     """Update model thresholds."""
     for field, value in thresholds.dict().items():
-        existing = db.query(ModelThreshold).filter(ModelThreshold.name == field).first()
+        existing = db.query(DBModelThreshold).filter(DBModelThreshold.name == field).first()
         if existing:
             existing.value = value
         else:
-            db.add(ModelThreshold(id=field, name=field, value=value))
+            db.add(DBModelThreshold(id=field, name=field, value=value))
     
     db.commit()
     
@@ -174,21 +179,4 @@ def update_thresholds(
     
     return thresholds
 
-
-if __name__ == "__main__":
-    import uvicorn
-    if settings.debug:
-        uvicorn.run(
-            "main:app",
-            host=settings.host,
-            port=settings.port,
-            reload=True,
-        )
-    else:
-        uvicorn.run(
-            app,
-            host=settings.host,
-            port=settings.port,
-            reload=False,
-        )
 

@@ -57,7 +57,7 @@ async def create_profile(
     db.commit()
 
     if photos:
-        from main import extract_face_embedding
+        from utils import extract_face_embedding
         for photo in photos:
             embedding = await extract_face_embedding(photo)
             if embedding is not None:

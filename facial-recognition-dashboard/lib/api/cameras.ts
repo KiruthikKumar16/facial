@@ -1,11 +1,11 @@
-import { apiUrl, authFetch, handleResponse } from './config';
+import { authFetch, handleResponse, strOrEmpty, numOrZero, boolOrFalse } from './config';
 import type { Camera, CameraConfigProfile } from '../types';
 
 import { adaptCamera } from './adapters';
 
 export const fetchCameras = async (): Promise<Camera[]> => {
   const response = await authFetch('/api/cameras')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.cameras ?? []
     return arr
@@ -26,7 +26,7 @@ export const fetchCameras = async (): Promise<Camera[]> => {
 
 export const fetchCameraConfig = async (cameraId: string): Promise<CameraConfigProfile> => {
   const response = await authFetch(`/api/cameras/${encodeURIComponent(cameraId)}/config`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return {
       id: strOrEmpty(raw.id),
@@ -60,7 +60,7 @@ export const saveCameraConfig = async (cameraId: string, config: Partial<CameraC
       isActive: config.isActive,
     }),
   })
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return {
       id: strOrEmpty(raw.id),
@@ -86,7 +86,7 @@ export const rollbackCameraConfig = async (cameraId: string): Promise<CameraConf
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
   })
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   return {
     id: strOrEmpty(raw.id),
     cameraId: strOrEmpty(raw.camera_id ?? raw.cameraId),
@@ -101,4 +101,3 @@ export const rollbackCameraConfig = async (cameraId: string): Promise<CameraConf
     updatedAt: strOrEmpty(raw.updated_at ?? raw.updatedAt) || undefined,
   }
 }
-

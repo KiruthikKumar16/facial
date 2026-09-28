@@ -1,11 +1,11 @@
-import { apiUrl, authFetch, handleResponse } from './config';
+import { authFetch, handleResponse } from './config';
 import type { ModelThresholds } from '../types';
 
 import { adaptThresholds, reverseAdaptThresholds } from './adapters';
 
 export const fetchThresholds = async (): Promise<ModelThresholds> => {
   const response = await authFetch('/api/thresholds')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return adaptThresholds(raw)
   } catch (e) {
@@ -23,7 +23,7 @@ export const saveThresholds = async (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return adaptThresholds(raw)
   } catch (e) {
@@ -31,4 +31,3 @@ export const saveThresholds = async (
     return adaptThresholds({})
   }
 }
-

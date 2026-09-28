@@ -7,11 +7,25 @@ from typing import Optional, List, Dict, Any
 import uuid
 import json
 
+import hashlib
+import logging
+
 from database import get_db
 from models import *
 from schemas import *
 from config import settings, IST
 from dependencies import verify_edge_node
+from state import continuity_tracker
+from websocket import manager
+from facial_recognition.version_bundle import ModelConfigVersionBundle
+from utils import (
+    resolve_detection_identity,
+    parse_gender,
+    alert_meta_for_detection,
+    build_face_log_payload,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=['Detections'])
 
@@ -90,7 +104,7 @@ async def create_detection(
 
     camera = db.query(Camera).filter(Camera.id == req.camera_id).first()
     if not camera:
-        camera = Camera(id=req.camera_id, name=req.camera_id, status=CameraStatusEnum.online)
+        camera = Camera(id=req.camera_id, name=req.camera_id, status=CameraStatus.online)
         db.add(camera)
         db.commit()
         db.refresh(camera)
@@ -221,20 +235,17 @@ async def create_detection(
     except IntegrityError:
         db.rollback()
         # The event_id already exists. This handles concurrent duplicate submissions safely.
-    except Exception as e:
-        import traceback
-        with open("error_log.txt", "w") as f:
-            f.write(traceback.format_exc())
-        raise
         existing = db.query(Detection).filter(Detection.event_id == req.event_id).first()
-        if not existing:
-            raise  # IntegrityError wasn't caused by event_id uniqueness
-        
-        logger.info(f"Detection {req.event_id} already exists (idempotent retry)")
-        resp = DetectionResponse.model_validate(existing)
-        resp.sync_info = sync_info
-        resp.inserted = False
-        return resp
+        if existing:
+            logger.info(f"Detection {req.event_id} already exists (idempotent retry)")
+            resp = DetectionResponse.model_validate(existing)
+            resp.sync_info = sync_info
+            resp.inserted = False
+            return resp
+        raise
+    except Exception as e:
+        logger.exception(f"Error saving detection {req.event_id}: {e}")
+        raise
 
     should_alert, severity, reason = alert_meta_for_detection(status, profile, req.identity)
     if should_alert and severity and reason:

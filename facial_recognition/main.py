@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 # Add facial_recognition module to path
-sys.path.insert(0, str(Path(__file__).parent))
+_workspace_root = str(Path(__file__).resolve().parent.parent)
+if _workspace_root not in sys.path:
+    sys.path.insert(0, _workspace_root)
 
 from facial_recognition.main_cpu import CpuCameraPipeline, build_sources, load_config
 from facial_recognition.cli import parse_run_args, resolve_det_size, resolve_model, resolve_camera_size

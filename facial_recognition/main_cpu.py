@@ -50,6 +50,13 @@ yaml: Any = yaml
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+import sys
+
+# Ensure workspace root is in sys.path when running script directly
+_workspace_root = str(Path(__file__).resolve().parent.parent)
+if _workspace_root not in sys.path:
+    sys.path.insert(0, _workspace_root)
+
 from facial_recognition.capture import CameraCapture
 from facial_recognition.detector import InsightFaceDetector  # type: ignore[reportMissingImports]
 from facial_recognition.logger import DetectionLogger

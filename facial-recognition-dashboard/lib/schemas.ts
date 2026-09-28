@@ -3,9 +3,9 @@ import { AVATAR_TONES, hashString, normalizeRole } from './api/config';
 import type { ProfileRole } from './types';
 
 // Helpers
-const strOrEmpty = z.string().nullish().transform(v => v || '');
-const numOrZero = z.coerce.number().nullish().transform(v => v || 0);
-const boolOrFalse = z.coerce.boolean().nullish().transform(v => v || false);
+export const strOrEmpty = z.string().nullish().transform(v => v || '');
+export const numOrZero = z.coerce.number().nullish().transform(v => v || 0);
+export const boolOrFalse = z.coerce.boolean().nullish().transform(v => v || false);
 
 // Converts 0.0-1.0 to 0-100%
 const confidenceTransform = z.coerce.number().nullish().transform(v => {

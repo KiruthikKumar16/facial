@@ -142,8 +142,12 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
         // Set to end of day (23:59:59.999999) for date_to
         date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999999)
       }
-
-      return fetchFootfall(undefined, date_from, date_to)
+      
+      console.log('fetchFootfall params:', { date_from, date_to })
+      return fetchFootfall(undefined, date_from, date_to).then(res => {
+        console.log('fetchFootfall result:', res)
+        return res
+      })
     },
     refetchInterval: 5000, // Real-time: refresh every 5 seconds
   })
@@ -172,6 +176,8 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
       unknown: 0
     }
   })
+
+  console.log('FootfallChart allHours:', allHours.filter(h => h.detections > 0))
 
   return (
     <Card className="gap-0 py-0">

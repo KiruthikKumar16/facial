@@ -3,15 +3,18 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Request, Response,
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, text, case, select, or_
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
 import uuid
 import json
+import hashlib
 
 from database import get_db
 from models import *
 from schemas import *
 from config import settings, IST
 from dependencies import verify_edge_node
+from state import ai_models
+from sqlalchemy import select
+from utils import snapshot_tone_for, parse_gender, extract_face_embedding
 
 router = APIRouter(tags=['Forensic'])
 
@@ -46,9 +49,10 @@ def get_detection_provenance(
             raise HTTPException(status_code=404, detail="Recognition event provenance not found")
         
         # Synthesize fallback provenance
+        resolved_identity = (det.profile.name if det.profile else "Unknown")
         frame_ref = f"frm_{det.camera_id}_{int(det.timestamp.timestamp()*1000)}"
         emb_fp = hashlib.sha256(f"emb_{det.event_id}".encode()).hexdigest()
-        candidates = [{"identity": det.identity or "Unknown", "score": det.confidence or 0.0, "rank": 1}]
+        candidates = [{"identity": resolved_identity, "score": det.confidence or 0.0, "rank": 1}]
         obs_refs = [f"obs_{frame_ref}_01"]
         chain_hash = hashlib.sha256(f"chain_{det.event_id}".encode()).hexdigest()
         
@@ -58,7 +62,7 @@ def get_detection_provenance(
             ProvenanceStageResponse(stage_name="3. Face Tracking", stage_id="track_untracked", timestamp=det.timestamp.timestamp(), metadata={"track_id": None}),
             ProvenanceStageResponse(stage_name="4. Embedding Extraction", stage_id=f"emb_{emb_fp[:12]}", timestamp=det.timestamp.timestamp(), metadata={"embedding_fingerprint": emb_fp}),
             ProvenanceStageResponse(stage_name="5. Candidate Evaluation", stage_id=f"eval_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"candidates": candidates}),
-            ProvenanceStageResponse(stage_name="6. Recognition Decision", stage_id=f"dec_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"selected_identity": det.identity, "confidence": det.confidence}),
+            ProvenanceStageResponse(stage_name="6. Recognition Decision", stage_id=f"dec_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"selected_identity": resolved_identity, "confidence": det.confidence}),
             ProvenanceStageResponse(stage_name="7. Cloud Synchronization", stage_id=f"sync_{det.event_id}", timestamp=det.timestamp.timestamp(), metadata={"cloud_detection_id": det.id}),
         ]
         
@@ -75,7 +79,7 @@ def get_detection_provenance(
             embedding_fingerprint=emb_fp,
             candidate_matches=[ProvenanceCandidateResponse(**c) for c in candidates],
             decision_tier="LOCAL_HIGH_CONFIDENCE",
-            selected_identity=det.identity or "Unknown",
+            selected_identity=resolved_identity,
             confidence=det.confidence or 0.0,
             decision_timestamp=det.timestamp,
             sync_event_id=f"sync_{det.event_id}",
@@ -246,5 +250,99 @@ async def run_forensic_search(
         wearing_mask=wearing_mask,
         wearing_glasses=wearing_glasses,
     )
+
+
+def run_forensic_vector_query(
+    db: Session,
+    target_embedding: List[float],
+    threshold: float = 0.60,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    camera_ids: Optional[List[str]] = None,
+    gender: Optional[str] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+    wearing_mask: Optional[bool] = None,
+    wearing_glasses: Optional[bool] = None,
+) -> list[ForensicMatchResponse]:
+    """Search enrolled gallery embeddings and annotate matches from detection history."""
+    if len(target_embedding) != 512:
+        raise HTTPException(status_code=422, detail="Probe embedding must contain 512 values.")
+
+    max_distance = 1.0 - threshold
+    camera_filter = [camera_id.strip() for camera_id in (camera_ids or []) if camera_id.strip()]
+
+    detection_filters = []
+    if date_from is not None:
+        detection_filters.append(Detection.timestamp >= date_from)
+    if date_to is not None:
+        detection_filters.append(Detection.timestamp <= date_to)
+    if camera_filter:
+        detection_filters.append(Detection.camera_id.in_(camera_filter))
+    if gender and gender.lower() != "all":
+        detection_filters.append(Detection.gender == parse_gender(gender))
+    if age_min is not None:
+        detection_filters.append(Detection.age >= age_min)
+    if age_max is not None:
+        detection_filters.append(Detection.age <= age_max)
+    if wearing_mask is True:
+        detection_filters.append(Detection.wearing_mask.is_(True))
+    if wearing_glasses is True:
+        detection_filters.append(Detection.wearing_glasses.is_(True))
+
+    distance_expr = Embedding.vector.cosine_distance(target_embedding)
+    query = db.query(
+        Profile,
+        distance_expr.label("distance")
+    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
+        distance_expr <= max_distance
+    )
+
+    if detection_filters:
+        matching_profile_ids = select(Detection.profile_id).filter(
+            Detection.profile_id.isnot(None),
+            *detection_filters,
+        ).distinct()
+        query = query.filter(Profile.id.in_(matching_profile_ids))
+
+    results = query.order_by("distance").limit(25).all()
+
+    matches = []
+    seen = set()
+    for profile, distance in results:
+        if profile.id in seen:
+            continue
+        seen.add(profile.id)
+        latest_detection_query = db.query(Detection).filter(
+            Detection.profile_id == profile.id
+        )
+        if detection_filters:
+            latest_detection_query = latest_detection_query.filter(*detection_filters)
+        latest_detection = latest_detection_query.order_by(
+            Detection.timestamp.desc()
+        ).first()
+        matches.append(
+            ForensicMatchResponse(
+                profile_id=profile.id,
+                profile_name=profile.name,
+                role=profile.role.value if profile.role else None,
+                match_score=1.0 - float(distance),
+                embeddings_matched=profile.embedding_count,
+                last_seen=(
+                    latest_detection.timestamp
+                    if latest_detection
+                    else profile.last_seen
+                ),
+                camera_name=(
+                    latest_detection.camera.name
+                    if latest_detection and latest_detection.camera
+                    else None
+                ),
+                avatarTone=snapshot_tone_for(profile.id),
+            )
+        )
+        if len(matches) >= 10:
+            break
+    return matches
 
 

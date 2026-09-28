@@ -18,7 +18,11 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from backend.config import IST
+try:
+    from backend.config import IST
+except ImportError:
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
 
 try:
     from .deterministic_event_id import generate_event_id

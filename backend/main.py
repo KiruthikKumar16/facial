@@ -13,7 +13,10 @@ from typing import Optional, List, Dict, Any
 # Add parent directory to sys.path to access facial_recognition module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.config import IST
+try:
+    from config import IST
+except ModuleNotFoundError:
+    from backend.config import IST
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Request, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -157,97 +160,15 @@ def _start_camera_pipelines(detector, recognizer, det_logger) -> dict:
         except Exception as exc:
             logger.error("Failed to start pipeline %s: %s", camera_id, exc)
     return pipelines
-
-AVATAR_TONES = ['sky', 'amber', 'rose', 'violet', 'emerald', 'cyan', 'orange', 'indigo']
-
-
-def snapshot_tone_for(key: str) -> str:
-    digest = hashlib.md5(key.encode('utf-8')).hexdigest()
-    return AVATAR_TONES[int(digest, 16) % len(AVATAR_TONES)]
-
-
-def is_pending_unknown_identity(identity: str) -> bool:
-    if not identity or identity == "Unknown":
-        return True
-    if identity.startswith("Person "):
-        parts = identity.split()
-        if len(parts) == 2 and parts[1].isdigit():
-            return True
-    return False
-
-
-def parse_gender(value: Optional[str]) -> GenderEnum:
-    if not value:
-        return GenderEnum.unknown
-    normalized = value.lower()
-    if normalized == GenderEnum.male.value:
-        return GenderEnum.male
-    if normalized == GenderEnum.female.value:
-        return GenderEnum.female
-    return GenderEnum.unknown
-
-
-def resolve_detection_identity(db: Session, identity: str):
-    """Return (profile, profile_id, status) for an edge identity string."""
-    if is_pending_unknown_identity(identity):
-        return None, None, DetectionStatusEnum.unknown
-
-    profile = db.query(Profile).filter(Profile.name == identity).first()
-    if profile:
-        if profile.role in (ProfileRoleEnum.blacklist, ProfileRoleEnum.watchlist):
-            status = DetectionStatusEnum.flagged
-        else:
-            status = DetectionStatusEnum.recognized
-        return profile, profile.id, status
-
-    new_id = str(uuid.uuid4())
-    profile = Profile(id=new_id, name=identity, role=ProfileRoleEnum.visitor)
-    db.add(profile)
-    db.commit()
-    db.refresh(profile)
-    return profile, new_id, DetectionStatusEnum.recognized
-
-
-def alert_meta_for_detection(
-    status: DetectionStatusEnum,
-    profile: Optional[Profile],
-    identity: str,
-) -> tuple[bool, Optional[str], Optional[str]]:
-    if status == DetectionStatusEnum.unknown:
-        label = identity if identity != "Unknown" else "unknown subject"
-        return True, "medium", f"Unknown face detected ({label})"
-    if profile and profile.role == ProfileRoleEnum.blacklist:
-        return True, "critical", f"Blacklist match: {profile.name}"
-    if profile and profile.role == ProfileRoleEnum.watchlist:
-        return True, "high", f"Watchlist match: {profile.name}"
-    if status == DetectionStatusEnum.flagged:
-        name = profile.name if profile else identity
-        return True, "high", f"Flagged identity: {name}"
-    return False, None, None
-
-
-def build_face_log_payload(
-    detection: Detection,
-    camera: Camera,
-    profile: Optional[Profile],
-) -> dict:
-    return {
-        "id": detection.id,
-        "camera_id": detection.camera_id,
-        "camera_name": camera.name,
-        "timestamp": detection.timestamp.isoformat() + "Z",
-        "status": detection.status.value,
-        "confidence": detection.confidence,
-        "liveness_score": detection.liveness_score,
-        "profile_id": detection.profile_id,
-        "profile_name": profile.name if profile else None,
-        "role": profile.role.value if profile else None,
-        "age": detection.age or 0,
-        "gender": detection.gender.value if detection.gender else "unknown",
-        "wearing_mask": detection.wearing_mask,
-        "wearing_glasses": detection.wearing_glasses,
-        "snapshot_tone": snapshot_tone_for(detection.id),
-    }
+from utils import (
+    snapshot_tone_for,
+    is_pending_unknown_identity,
+    parse_gender,
+    resolve_detection_identity,
+    alert_meta_for_detection,
+    build_face_log_payload,
+    extract_face_embedding,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -315,31 +236,6 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to close det_logger")
     ai_models.clear()
 
-async def extract_face_embedding(file: UploadFile) -> Optional[np.ndarray]:
-    """Helper to extract face embedding from uploaded file."""
-    detector = ai_models.get('detector')
-    if not detector:
-        return None
-    try:
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        
-        # Get faces using the facial_recognition module
-        results = detector.detect(img)
-        if not results:
-            return None
-            
-        # Return largest face embedding (bbox is [x0, y0, x1, y1])
-        faces = sorted(results, key=lambda f: (f['bbox'][2]-f['bbox'][0]) * (f['bbox'][3]-f['bbox'][1]), reverse=True)
-        face = faces[0]
-        embedding = detector.extract_embedding(img, face)
-        return embedding
-    except Exception as e:
-        logger.error(f"Error extracting embedding: {e}")
-        return None
 
 
 app = FastAPI(
@@ -565,85 +461,7 @@ def evaluate_cross_camera_transition(
 # ==================== Edge Node Health & Adaptive Controller Endpoints ====================
 
 node_health_store: Dict[str, Dict[str, Any]] = {}
-# ==================== Profile Endpoints ====================
 
-def _subject_vector(value: Any) -> Optional[np.ndarray]:
-    if value is None:
-        return None
-    try:
-        vector = np.asarray(value, dtype=np.float32).reshape(-1)
-        if vector.size != 512 or not np.isfinite(vector).all():
-            return None
-        norm = np.linalg.norm(vector)
-        return vector / norm if norm else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _refresh_unregistered_subjects(db: Session, threshold: Optional[float] = None) -> None:
-    threshold = threshold if threshold is not None else settings.unregistered_similarity_threshold
-    subjects = db.query(UnregisteredSubject).filter(UnregisteredSubject.status == "active").all()
-    pending = db.query(Detection).filter(
-        Detection.profile_id.is_(None),
-        Detection.status == DetectionStatusEnum.unknown,
-        Detection.embedding_vector.is_not(None),
-        Detection.unregistered_subject_id.is_(None),
-    ).order_by(Detection.timestamp.asc()).all()
-
-    for detection in pending:
-        vector = _subject_vector(detection.embedding_vector)
-        if vector is None:
-            continue
-        best_subject = None
-        best_similarity = -1.0
-        for subject in subjects:
-            representative = _subject_vector(subject.representative_embedding)
-            if representative is None:
-                continue
-            similarity = float(np.dot(vector, representative))
-            if similarity > best_similarity:
-                best_subject, best_similarity = subject, similarity
-
-        if best_subject is None or best_similarity < threshold:
-            subject = UnregisteredSubject(
-                id=str(uuid.uuid4()),
-                display_name=f"Unknown Person {len(subjects) + 1}",
-                representative_embedding=vector.tolist(),
-                similarity_threshold=threshold,
-                status="active",
-            )
-            db.add(subject)
-            db.flush()
-            subjects.append(subject)
-            best_subject = subject
-        detection.unregistered_subject_id = best_subject.id
-
-    if pending:
-        db.commit()
-
-
-def _subject_response(subject: UnregisteredSubject, db: Session) -> UnregisteredSubjectResponse:
-    detections = db.query(Detection).filter(
-        Detection.unregistered_subject_id == subject.id,
-        Detection.profile_id.is_(None),
-    ).order_by(Detection.timestamp.asc()).all()
-    if not detections:
-        raise HTTPException(status_code=404, detail="Unregistered subject not found")
-    event_ids = [d.event_id or d.id for d in detections]
-    fingerprint = hashlib.sha256(json.dumps(subject.representative_embedding).encode()).hexdigest()
-    return UnregisteredSubjectResponse(
-        id=subject.id,
-        display_name=subject.display_name,
-        capture_count=len(detections),
-        first_seen=detections[0].timestamp,
-        last_seen=detections[-1].timestamp,
-        cameras=sorted({d.camera_id for d in detections}),
-        best_confidence=max(float(d.confidence or 0) for d in detections),
-        representative_fingerprint=fingerprint,
-        vector_dimension=512,
-        event_ids=event_ids[:100],
-        status=subject.status,
-    )
 # ==================== Video Streaming Endpoints ====================
 
 async def _mjpeg_frame_generator(camera_id: str):

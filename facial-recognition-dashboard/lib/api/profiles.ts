@@ -1,11 +1,27 @@
-import { apiUrl, authFetch, handleResponse } from './config';
-import type { Profile, ProfileRole } from '../types';
+import { apiUrl, authFetch, handleResponse, strOrEmpty } from './config';
+import type { Profile, ProfileRole, Gender } from '../types';
 
 import { adaptProfile } from './adapters';
 
+export interface CreateProfilePayload {
+  name: string
+  role?: ProfileRole
+  department?: string
+  age?: number
+  gender?: Gender
+  notes?: string
+  photos?: File[]
+}
+
+export interface MergeProfilesResult {
+  merged: boolean
+  keptProfileId: string
+  deletedProfileId: string
+}
+
 export const fetchProfiles = async (): Promise<Profile[]> => {
   const response = await authFetch('/api/profiles')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.profiles ?? []
     return arr
@@ -28,9 +44,9 @@ export const fetchProfile = async (profileId: string): Promise<Profile | null> =
   const response = await authFetch(
     apiUrl(`/api/profiles/${encodeURIComponent(profileId)}`),
   )
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
-    return raw ? adaptProfile(raw) : null
+    return raw ? adaptProfile(raw) as Profile : null
   } catch (e) {
     console.error('fetchProfile adapt failed:', e)
     return null
@@ -61,12 +77,12 @@ export const createProfile = async (
     method: 'POST',
     body: formData,
   })
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
-    return adaptProfile(raw)
+    return adaptProfile(raw) as Profile
   } catch (e) {
     console.error('createProfile adapt failed:', e)
-    return adaptProfile({ id: '', name: payload.name })
+    return adaptProfile({ id: '', name: payload.name }) as Profile
   }
 }
 
@@ -76,7 +92,7 @@ export const mergeProfiles = async (
   keepProfileId?: string,
   deleteMerged: boolean = true,
 ): Promise<MergeProfilesResult> => {
-  const body: unknown = {
+  const body: any = {
     profileAId,
     profileBId,
     deleteMerged,
@@ -91,7 +107,7 @@ export const mergeProfiles = async (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return {
       merged: true,
@@ -117,14 +133,14 @@ export const deleteProfile = async (profileId: string): Promise<void> => {
   const response = await authFetch(`/api/profiles/${encodeURIComponent(profileId)}`, {
     method: 'DELETE',
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
 
 export const deleteProfileEmbeddings = async (profileId: string): Promise<void> => {
   const response = await authFetch(`/api/profiles/${encodeURIComponent(profileId)}/embeddings`, {
     method: 'DELETE',
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
 
 export const updateProfile = async (profileId: string, { name, role, department }: { name: string; role: ProfileRole; department: string }): Promise<void> => {
@@ -133,6 +149,5 @@ export const updateProfile = async (profileId: string, { name, role, department 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, role, department }),
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
-

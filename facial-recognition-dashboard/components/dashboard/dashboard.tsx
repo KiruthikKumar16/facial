@@ -33,18 +33,18 @@ export function Dashboard() {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    const wsAlerts = connectAlertsWebSocket((data) => {
+    const wsAlerts = connectAlertsWebSocket((data: any) => {
       if (data && data.id) {
         try {
           const newLog = adaptFaceLog(data)
-          queryClient.setQueryData(['face-logs'], (oldData: unknown) => {
+          queryClient.setQueryData(['face-logs'], (oldData: any) => {
             if (!oldData) return [newLog]
             return [newLog, ...oldData].slice(0, 100)
           })
           
           if (newLog.status === 'unknown') {
             const newUnknown = adaptUnknownCapture(data)
-            queryClient.setQueryData(['unknown-captures'], (oldData: unknown) => {
+            queryClient.setQueryData(['unknown-captures'], (oldData: any) => {
               if (!oldData) return [newUnknown]
               return [newUnknown, ...oldData].slice(0, 100)
             })
@@ -97,8 +97,7 @@ export function Dashboard() {
             ))}
           </TabsList>
         </div>
-
-        <main className="mx-auto w-full max-w-[1600px] p-4 lg:p-6">
+        <main className="mx-auto w-full p-4 lg:p-6">
           <TabsContent value="alerts">
             <ErrorBoundary><AlertsTab /></ErrorBoundary>
           </TabsContent>

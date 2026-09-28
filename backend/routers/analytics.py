@@ -2,7 +2,7 @@
 from fastapi import APIRouter, File, UploadFile, Form, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, text, case, select, or_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 import uuid
 
@@ -19,6 +19,7 @@ from schemas import (
     AttendanceRecordFullResponse
 )
 from config import IST
+from utils import snapshot_tone_for
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
@@ -122,7 +123,7 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
     return SubjectTrajectoryResponse(
         profileId=profileId,
         profileName=profile.name,
-        role=profile.role.value,
+        role=profile.role.value if hasattr(profile.role, 'value') else str(profile.role or "visitor"),
         path=path
     )
 
@@ -136,21 +137,18 @@ def get_footfall(
 ):
     # Determine the time range to filter by
     if date_from is not None or date_to is not None:
-        # Use explicit date range if provided
+        # Use explicit date range if provided, convert aware UTC to naive UTC for DB
         if date_from is not None:
-            start_time = date_from.replace(tzinfo=None)
+            start_time = date_from.astimezone(timezone.utc).replace(tzinfo=None)
         else:
             # If only date_to is provided, default to 7 days before date_to
-            start_time = date_to.replace(tzinfo=None) - timedelta(days=7)
+            start_time = date_to.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
 
         if date_to is not None:
-            end_time = date_to.replace(tzinfo=None)
+            end_time = date_to.astimezone(timezone.utc).replace(tzinfo=None)
         else:
             # If only date_from is provided, default to 7 days after date_from
-            end_time = date_from.replace(tzinfo=None) + timedelta(days=7)
-
-        # Adjust end_time to be the end of the day (23:59:59.999999)
-        end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+            end_time = date_from.astimezone(timezone.utc).replace(tzinfo=None) + timedelta(days=7)
     else:
         # Fall back to original behavior for backward compatibility
         start_time = datetime.now(IST) - timedelta(days=days)
@@ -166,9 +164,10 @@ def get_footfall(
 
     buckets = {}
     for d in detections:
-        # Ensure timestamp is treated as IST
+        # Ensure timestamp is treated as IST (database stores UTC)
         if d.timestamp.tzinfo is None:
-            ts = d.timestamp.replace(tzinfo=IST)
+            from datetime import timezone
+            ts = d.timestamp.replace(tzinfo=timezone.utc).astimezone(IST)
         else:
             ts = d.timestamp.astimezone(IST)
             
@@ -251,8 +250,8 @@ def get_gender_distribution(
     slices = []
     for gender, count in results:
         if gender:
-            label = gender.value.capitalize() if hasattr(gender, 'value') else str(gender).capitalize()
-            slices.append(DemographicSliceResponse(label=label, value=count))
+            label = gender.value.lower() if hasattr(gender, 'value') else str(gender).lower()
+            slices.append(DemographicSliceResponse(label=label.capitalize(), value=count))
     return slices
 
 
@@ -307,7 +306,7 @@ def get_attendance(
             records.append(AttendanceRecordFullResponse(
                 profileId=p.id,
                 profileName=p.name,
-                role=p.role.value,
+                role=p.role.value if hasattr(p.role, 'value') else str(p.role or "visitor"),
                 department=p.department,
                 checkIn=row.check_in,
                 checkOut=row.check_out,

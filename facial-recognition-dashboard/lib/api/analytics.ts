@@ -1,11 +1,11 @@
-import { apiUrl, authFetch, handleResponse } from './config';
+import { apiUrl, authFetch, handleResponse, strOrEmpty, numOrZero } from './config';
 import type { SystemKpis, FootfallBucket, SubjectTrajectory, MovementNetwork, DuplicateCandidate, DemographicSlice, AttendanceRecord } from '../types';
 
 import { adaptKpis, adaptFootfallBucket, adaptSubjectTrajectory, adaptDuplicateCandidate, adaptDemographicSlice, adaptAttendanceRecord } from './adapters';
 
 export const fetchKpis = async (): Promise<SystemKpis> => {
   const response = await authFetch('/api/kpis')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return adaptKpis(raw)
   } catch (e) {
@@ -16,7 +16,7 @@ export const fetchKpis = async (): Promise<SystemKpis> => {
 
 export const fetchDuplicates = async (): Promise<DuplicateCandidate[]> => {
   const response = await authFetch('/api/analytics/duplicates')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.duplicates ?? []
     return arr
@@ -46,7 +46,7 @@ export const fetchTrajectory = async (
     params.append('hours', encodeURIComponent(String(hours)))
   const qs = params.toString() ? `?${params.toString()}` : ''
   const response = await authFetch(`/api/analytics/trajectory${qs}`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return raw ? adaptSubjectTrajectory(raw) : null
   } catch (e) {
@@ -67,16 +67,16 @@ export const fetchFootfall = async (
   }
 
   if (date_from !== undefined) {
-    params.append('date_from', toISTISOString(date_from))
+    params.append('date_from', date_from.toISOString())
   }
 
   if (date_to !== undefined) {
-    params.append('date_to', toISTISOString(date_to))
+    params.append('date_to', date_to.toISOString())
   }
 
   const qs = params.toString() ? `?${params.toString()}` : ''
   const response = await authFetch(`/api/analytics/footfall${qs}`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.buckets ?? raw?.footfall ?? []
     return arr
@@ -101,7 +101,7 @@ export const fetchGenderDistribution = async (dateFrom?: string, dateTo?: string
   if (dateTo) params.append('date_to', dateTo)
   const query = params.toString() ? `?${params.toString()}` : ''
   const response = await authFetch(`/api/analytics/gender-distribution${query}`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.distribution ?? raw?.slices ?? []
     return arr
@@ -130,15 +130,15 @@ export const fetchAttendance = async (
     params.append('days', String(days))
   }
   if (date_from !== undefined) {
-    params.append('date_from', toISTISOString(date_from))
+    params.append('date_from', date_from.toISOString())
   }
   if (date_to !== undefined) {
-    params.append('date_to', toISTISOString(date_to))
+    params.append('date_to', date_to.toISOString())
   }
   
   const qs = params.toString() ? `?${params.toString()}` : ''
   const response = await authFetch(`/api/analytics/attendance${qs}`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.records ?? raw?.attendance ?? []
     return arr
@@ -159,11 +159,11 @@ export const fetchAttendance = async (
 
 export const fetchMovementNetwork = async (): Promise<MovementNetwork> => {
   const response = await authFetch('/api/analytics/movement-network')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const edges = Array.isArray(raw?.edges) ? raw.edges : []
     return {
-      edges: edges.map((edge: unknown) => ({
+      edges: edges.map((edge: any) => ({
         fromCameraId: strOrEmpty(edge.from_camera_id ?? edge.fromCameraId),
         fromCameraName: strOrEmpty(edge.from_camera_name ?? edge.fromCameraName),
         toCameraId: strOrEmpty(edge.to_camera_id ?? edge.toCameraId),

@@ -109,7 +109,13 @@ class UnregisteredSubjectResponse(BaseModel):
 
 
 class UnregisteredSubjectRenameRequest(BaseModel):
-    display_name: str
+    display_name: Optional[str] = None
+    displayName: Optional[str] = None
+    name: Optional[str] = None
+
+    @property
+    def resolved_name(self) -> str:
+        return (self.display_name or self.displayName or self.name or "").strip()
 
 
 class UnregisteredSubjectRegisterRequest(BaseModel):
@@ -119,11 +125,21 @@ class UnregisteredSubjectRegisterRequest(BaseModel):
 
 
 class UnregisteredSubjectAssignRequest(BaseModel):
-    profile_id: str
+    profile_id: Optional[str] = None
+    profileId: Optional[str] = None
+
+    @property
+    def resolved_profile_id(self) -> str:
+        return (self.profile_id or self.profileId or "").strip()
 
 
 class UnregisteredSubjectMergeRequest(BaseModel):
-    source_subject_id: str
+    source_subject_id: Optional[str] = None
+    sourceId: Optional[str] = None
+
+    @property
+    def resolved_source_id(self) -> str:
+        return (self.source_subject_id or self.sourceId or "").strip()
 
 
 # ==================== Detection / FaceLog ====================
@@ -499,6 +515,7 @@ class VectorSearchRequest(BaseModel):
 
 
 class VectorSearchMatch(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
     identity: str
     score: float
     profile_id: str

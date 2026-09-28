@@ -1,0 +1,152 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-lint-and-test:
+    name: Backend CI (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'backend/requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest httpx flake8
+
+      - name: Validate Python syntax across all modules
+        run: |
+          python -m compileall -q backend facial_recognition
+
+      - name: Lint with Flake8 (Syntax and Critical Errors)
+        run: |
+          # Stop build if there are Python syntax errors or undefined names
+          flake8 backend facial_recognition --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run Backend Unit Tests
+        env:
+          DATABASE_URL: "sqlite:///./test_ci.db"
+          SECRET_KEY: "ci-test-secret-key-1234567890"
+          EDGE_API_KEY: "ci-test-edge-api-key"
+          DEBUG: "false"
+          ENABLE_FORENSIC_SEARCH: "false"
+        run: |
+          pytest backend/tests -v
+
+  frontend-lint-and-build:
+    name: Frontend CI (Node 20 / Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: 'facial-recognition-dashboard/pnpm-lock.yaml'
+
+      - name: Install dependencies
+        working-directory: facial-recognition-dashboard
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript type-check
+        working-directory: facial-recognition-dashboard
+        run: pnpm exec tsc --noEmit
+
+      - name: ESLint check
+        working-directory: facial-recognition-dashboard
+        run: pnpm run lint
+
+      - name: Build Next.js application
+        working-directory: facial-recognition-dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+          NODE_ENV: production
+        run: pnpm run build
+
+  docker-compose-validate:
+    name: Docker Build Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate docker-compose configuration
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/facial_ops"
+          SECRET_KEY: "ci-docker-secret-key"
+          EDGE_API_KEY: "ci-docker-edge-key"
+          ADMIN_PASSWORD: "ci-admin-password"
+        run: |
+          docker compose config
+
+      - name: Build Backend Docker Image
+        run: |
+          docker compose build backend
+
+      - name: Build Frontend Docker Image
+        run: |
+          docker compose build frontend
+
+  deploy:
+    name: Deploy & Cloud Status
+    needs: [backend-lint-and-test, frontend-lint-and-build, docker-compose-validate]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy Webhook (if configured)
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          echo "Triggering Render deployment..."
+          curl -s -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Render deploy webhook triggered."
+
+      - name: Trigger Vercel Deploy Webhook (if configured)
+        if: env.VERCEL_DEPLOY_HOOK_URL != ''
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          echo "Triggering Vercel deployment..."
+          curl -s -X POST "$VERCEL_DEPLOY_HOOK_URL"
+          echo "Vercel deploy webhook triggered."
+
+      - name: Output Deployment Summary
+        run: |
+          echo "### 🚀 CI/CD Pipeline Passed Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend CI**: Python syntax, flake8, and pytest passed." >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend CI**: TypeScript (\`tsc\`), ESLint, and Next.js Turbopack build passed." >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker CI**: Backend and Frontend Docker containers built and validated." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Live Deployment Targets:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend (Render)**: Auto-deployed on push to \`main\` (or triggered via webhook)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend (Vercel)**: Auto-deployed on push to \`main\` (or triggered via webhook)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Database (Supabase)**: Cloud PostgreSQL with pgvector" >> $GITHUB_STEP_SUMMARY
+          echo "- **Edge Detection**: Local CV pipeline synced with cloud backend" >> $GITHUB_STEP_SUMMARY

@@ -1,7 +1,22 @@
-import { apiUrl, authFetch, handleResponse } from './config';
-import type { ForensicMatch, RecognitionProvenance } from '../types';
+import { apiUrl, authFetch, handleResponse, strOrEmpty, numOrZero } from './config';
+import type { ForensicMatch, RecognitionProvenance, Gender } from '../types';
 
 import { adaptForensicMatch } from './adapters';
+
+export type ForensicSearchPayload = {
+  imageFile?: File
+  profileId?: string
+  threshold?: number
+  from?: string
+  to?: string
+  cameraIds?: string[]
+  gender?: Gender | 'all'
+  ageRange?: number[]
+  wearingMask?: boolean
+  wearingGlasses?: boolean
+  minAge?: number
+  maxAge?: number
+}
 
 export const runForensicSearch = async (
   payload: ForensicSearchPayload,
@@ -28,13 +43,15 @@ export const runForensicSearch = async (
     formData.append('age_min', String(payload.ageRange[0]))
     formData.append('age_max', String(payload.ageRange[1]))
   }
+  if (payload.minAge) formData.append('min_age', String(payload.minAge))
+  if (payload.maxAge) formData.append('max_age', String(payload.maxAge))
   if (payload.wearingMask) formData.append('wearing_mask', 'true')
   if (payload.wearingGlasses) formData.append('wearing_glasses', 'true')
   const response = await authFetch('/api/forensic/search', {
     method: 'POST',
     body: formData,
   })
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.matches ?? []
     return arr
@@ -55,9 +72,8 @@ export const runForensicSearch = async (
 
 export const fetchProvenance = async (eventId: string): Promise<RecognitionProvenance> => {
   const response = await authFetch(`/api/detections/${encodeURIComponent(eventId)}/provenance`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
-    // Simplified adaptation - in reality this would be more complex
     return {
       eventId: strOrEmpty(raw.event_id ?? raw.eventId),
       detectionId: strOrEmpty(raw.detection_id ?? raw.detectionId) || undefined,
@@ -72,7 +88,7 @@ export const fetchProvenance = async (eventId: string): Promise<RecognitionProve
       embeddingModelVersion: strOrEmpty(raw.embedding_model_version ?? raw.embeddingModelVersion),
       embeddingFingerprint: strOrEmpty(raw.embedding_fingerprint ?? raw.embeddingFingerprint),
       candidateMatches: Array.isArray(raw.candidate_matches ?? raw.candidateMatches)
-        ? (raw.candidate_matches ?? raw.candidateMatches).map((match: unknown) => ({
+        ? (raw.candidate_matches ?? raw.candidateMatches).map((match: any) => ({
             identity: strOrEmpty(match.identity),
             similarity: numOrZero(match.similarity),
             rank: numOrZero(match.rank),
@@ -86,7 +102,7 @@ export const fetchProvenance = async (eventId: string): Promise<RecognitionProve
       decisionTimestamp: strOrEmpty(raw.decision_timestamp ?? raw.decisionTimestamp),
       provenanceChainHash: strOrEmpty(raw.provenance_chain_hash ?? raw.provenanceChainHash),
       stages: Array.isArray(raw.stages)
-        ? raw.stages.map((stage: unknown) => ({
+        ? raw.stages.map((stage: any) => ({
             stage: strOrEmpty(stage.stage),
             timestamp: strOrEmpty(stage.timestamp),
             metadata: stage.metadata || {},
@@ -98,17 +114,3 @@ export const fetchProvenance = async (eventId: string): Promise<RecognitionProve
     throw e
   }
 }
-
-export type ForensicSearchPayload = {
-  imageFile?: File
-  profileId?: string
-  threshold?: number
-  from?: string
-  to?: string
-  cameraIds?: string[]
-  gender?: Gender | 'all'
-  ageRange?: number[]
-  wearingMask?: boolean
-  wearingGlasses?: boolean
-}
-

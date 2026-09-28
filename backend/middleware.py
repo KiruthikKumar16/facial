@@ -10,7 +10,20 @@ class JWTMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         
         # Public or internal paths that don't need dashboard JWT
-        if request.method == "OPTIONS" or path.startswith("/api/internal") or path.startswith("/api/auth") or path.startswith("/ws/") or not path.startswith("/api/"):
+        if (
+            request.method == "OPTIONS"
+            or path.startswith("/api/internal")
+            or path.startswith("/api/auth")
+            or path.startswith("/ws/")
+            or path == "/health"
+            or not path.startswith("/api/")
+        ):
+            return await call_next(request)
+
+        # Edge node requests authenticated via X-API-Key
+        api_key = request.headers.get("x-api-key")
+        expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
+        if api_key and api_key == expected_key:
             return await call_next(request)
             
         auth_header = request.headers.get("Authorization")

@@ -9,7 +9,7 @@ export const fetchFaceLogs = async (
 ): Promise<FaceLog[]> => {
   const qs = `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`
   const response = await authFetch(`/api/logs${qs}`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.logs ?? []
     return arr
@@ -31,7 +31,7 @@ export const fetchFaceLogs = async (
 export const fetchAlerts = async (limit: number = 50): Promise<Alert[]> => {
   const qs = `?limit=${encodeURIComponent(String(limit))}`
   const response = await authFetch(`/api/alerts${qs}`)
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : raw?.alerts ?? []
     return arr
@@ -62,7 +62,7 @@ export const acknowledgeAlert = async (
       body: JSON.stringify({ acknowledged }),
     },
   )
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     return adaptAlert(raw)
   } catch (e) {
@@ -95,7 +95,7 @@ export const fetchUnknownCaptures = async (): Promise<UnknownCapture[]> => {
 
 export const fetchUnregisteredSubjects = async (): Promise<UnregisteredSubject[]> => {
   const response = await authFetch('/api/unregistered-subjects')
-  const raw = await handleResponse<unknown>(response)
+  const raw = await handleResponse<any>(response)
   try {
     const arr = Array.isArray(raw) ? raw : [] // maybe raw?.unregisteredSubjects ?? []
     return arr.map((item: unknown) => {
@@ -118,21 +118,21 @@ export const assignUnregisteredSubject = async (id: string, profileId: string): 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ profileId }),
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
 
 export const deleteUnregisteredEvent = async (subjectId: string, eventId: string): Promise<void> => {
   const response = await authFetch(`/api/unregistered-subjects/${encodeURIComponent(subjectId)}/events/${encodeURIComponent(eventId)}`, {
     method: 'DELETE',
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
 
 export const deleteUnregisteredSubject = async (id: string): Promise<void> => {
   const response = await authFetch(`/api/unregistered-subjects/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
 
 export const mergeUnregisteredSubjects = async (id: string, sourceId: string): Promise<void> => {
@@ -141,17 +141,14 @@ export const mergeUnregisteredSubjects = async (id: string, sourceId: string): P
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sourceId }),
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
 
 export const registerUnregisteredSubject = async (id: string, { name, role }: { name: string; role: ProfileRole }): Promise<void> => {
-  const formData = new FormData()
-  formData.append('id', id)
-  formData.append('name', name)
-  formData.append('role', role)
-  const response = await authFetch(`/api/unregistered-subjects/register`, {
+  const response = await authFetch(`/api/unregistered-subjects/${encodeURIComponent(id)}/register`, {
     method: 'POST',
-    body: formData,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, role }),
   })
   await handleResponse<unknown>(response)
 }
@@ -162,6 +159,5 @@ export const renameUnregisteredSubject = async (id: string, name: string): Promi
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   })
-  await handleResponse<unknown>(response)
+  await handleResponse<any>(response)
 }
-
