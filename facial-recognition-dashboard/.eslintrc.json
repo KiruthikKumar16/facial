@@ -1,6 +1,7 @@
 {
   "parser": "@typescript-eslint/parser",
   "plugins": ["@typescript-eslint", "react"],
+  "ignorePatterns": [".next", "node_modules", "out", "public", "*.config.mjs", "*.config.js"],
   "extends": [
     "eslint:recommended",
     "plugin:react/recommended",

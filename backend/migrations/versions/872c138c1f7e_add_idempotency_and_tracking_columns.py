@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 
 
 # revision identifiers, used by Alembic.
@@ -23,7 +24,7 @@ def upgrade() -> None:
     op.create_table('unregistered_subjects',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('display_name', sa.String(), nullable=False),
-    sa.Column('representative_embedding', models.Vector(), nullable=False),
+    sa.Column('representative_embedding', Vector(512), nullable=False),
     sa.Column('similarity_threshold', sa.Float(), nullable=False),
     sa.Column('status', sa.String(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=True),
@@ -44,7 +45,7 @@ def upgrade() -> None:
 
     with op.batch_alter_table('detections', schema=None) as batch_op:
         batch_op.add_column(sa.Column('unregistered_subject_id', sa.String(), nullable=True))
-        batch_op.add_column(sa.Column('embedding_vector', models.Vector(), nullable=True))
+        batch_op.add_column(sa.Column('embedding_vector', Vector(512), nullable=True))
         batch_op.create_index(batch_op.f('ix_detections_config_version'), ['config_version'], unique=False)
         batch_op.create_index(batch_op.f('ix_detections_embedding_model_version'), ['embedding_model_version'], unique=False)
         batch_op.create_index(batch_op.f('ix_detections_unregistered_subject_id'), ['unregistered_subject_id'], unique=False)

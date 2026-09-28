@@ -61,7 +61,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          package_json_file: 'facial-recognition-dashboard/package.json'
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
