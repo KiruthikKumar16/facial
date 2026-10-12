@@ -57,7 +57,7 @@ try:
     from facial_recognition.recognizer import Recognizer
     from facial_recognition.logger import DetectionLogger
     from facial_recognition.pending import PendingSaver
-except ImportError as e:
+except Exception as e:
     InsightFaceDetector = None
     Recognizer = None
     DetectionLogger = None
