@@ -43,8 +43,8 @@ export const runForensicSearch = async (
     formData.append('age_min', String(payload.ageRange[0]))
     formData.append('age_max', String(payload.ageRange[1]))
   }
-  if (payload.minAge) formData.append('min_age', String(payload.minAge))
-  if (payload.maxAge) formData.append('max_age', String(payload.maxAge))
+  if (payload.minAge !== undefined) formData.append('age_min', String(payload.minAge))
+  if (payload.maxAge !== undefined) formData.append('age_max', String(payload.maxAge))
   if (payload.wearingMask) formData.append('wearing_mask', 'true')
   if (payload.wearingGlasses) formData.append('wearing_glasses', 'true')
   const response = await authFetch('/api/forensic/search', {

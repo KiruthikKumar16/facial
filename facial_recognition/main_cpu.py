@@ -125,6 +125,7 @@ class CpuCameraPipeline:
         temporal_win = profile.temporal_window if profile else float(track_cfg.get('max_observation_window_seconds', 3.0))
         sim_thresh = profile.recognition_threshold if profile else float(track_cfg.get('finalization_similarity_threshold', self.recognizer.threshold))
 
+        hier_engine = getattr(self.recognizer, 'hierarchical_engine', None)
         self.track_manager = TemporalTrackManager(
             max_observation_window_seconds=temporal_win,
             max_observations_per_track=int(track_cfg.get('max_observations_per_track', 30)),
@@ -135,6 +136,7 @@ class CpuCameraPipeline:
             quality_weight_gamma=float(track_cfg.get('quality_weight_gamma', 2.0)),
             temporal_decay_lambda=float(track_cfg.get('temporal_decay_lambda', 0.1)),
             max_active_tracks=int(track_cfg.get('max_active_tracks', 50)),
+            hierarchical_search_engine=hier_engine,
         )
         self._frame_count = 0
         self._processed_count = 0
@@ -357,6 +359,9 @@ class CpuCameraPipeline:
                     cat, q_metrics = self.quality_assessor.assess(frame, face, dt=dt)
                     quality_category = cat
                     quality_score = q_metrics.get('score', 100.0)
+                    liveness_score = q_metrics.get('liveness_score', 1.0)
+                else:
+                    liveness_score = 1.0
 
                 emb = None
                 if quality_category != "POOR":
@@ -370,7 +375,8 @@ class CpuCameraPipeline:
                     confidence=float(face.get('det_score', 1.0)),
                     embedding=emb,
                     gender=face.get('gender'),
-                    age=face.get('age')
+                    age=face.get('age'),
+                    liveness_score=liveness_score,
                 )
                 frame_observations.append(obs)
 
@@ -389,14 +395,41 @@ class CpuCameraPipeline:
                 fused_conf = track.fused_confidence
                 is_finalized = track.is_finalized
 
+                cfg_ver = 1
+                if self.camera_config_manager:
+                    prof = self.camera_config_manager.get_profile(self.camera_id)
+                    if prof:
+                        cfg_ver = prof.version
+
                 if is_finalized:
                     label = f"[{track_id}] {fused_id}*"
-                    if self.logger is not None:
-                        cfg_ver = 1
-                        if self.camera_config_manager:
-                            prof = self.camera_config_manager.get_profile(self.camera_id)
-                            if prof:
-                                cfg_ver = prof.version
+                    if self.logger is not None and not getattr(track, 'has_been_logged', False):
+                        self.logger.log_detection(
+                            self.camera_id, 
+                            full_bbox, 
+                            fused_id, 
+                            float(fused_conf), 
+                            age=obs.age,
+                            gender=obs.gender,
+                            quality_score=obs.quality_score,
+                            embedding=obs.embedding,
+                            config_version=cfg_ver,
+                            liveness_score=obs.liveness_score,
+                        )
+                        track.has_been_logged = True
+                elif track.valid_embeddings_count >= self.track_manager.min_obs and not getattr(track, 'has_been_saved', False):
+                    # Unknown face reached sufficient quality observations -> save crop to pending for gallery review
+                    if self.pending_saver is not None and obs.embedding is not None:
+                        l, t, r, b = [int(v) for v in full_bbox]
+                        fh, fw = frame.shape[:2]
+                        crop = frame[max(0, t):min(fh, b), max(0, l):min(fw, r)]
+                        if crop.size > 0:
+                            saved_label = self.pending_saver.save(obs.embedding, crop)
+                            if saved_label:
+                                fused_id = saved_label
+                                track.fused_identity = saved_label
+
+                    if self.logger is not None and not getattr(track, 'has_been_logged', False):
                         self.logger.log_detection(
                             self.camera_id, 
                             full_bbox, 
@@ -408,6 +441,9 @@ class CpuCameraPipeline:
                             embedding=obs.embedding,
                             config_version=cfg_ver,
                         )
+                        track.has_been_logged = True
+                    track.has_been_saved = True
+                    label = f"[{track_id}] {fused_id}"
                 elif obs.quality_category == "POOR":
                     label = f"[{track_id}] Poor Quality ({obs.quality_score:.0f})"
                 else:
@@ -565,7 +601,22 @@ def main():
         logger.info(f"Using remote detector at {remote_cfg.get('endpoint')}")
     else:
         detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
-    recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
+    hier_cfg = cfg.get('hierarchical_search', {})
+    hier_engine = None
+    if hier_cfg.get('enabled', False):
+        try:
+            from facial_recognition.hierarchical_search import HierarchicalSearchEngine
+            hier_engine = HierarchicalSearchEngine(
+                gallery_path=gallery_path,
+                local_high_confidence_threshold=float(hier_cfg.get('local_high_confidence_threshold', 0.65)),
+                local_uncertain_threshold=float(hier_cfg.get('local_uncertain_threshold', 0.35)),
+                cloud_recognition_threshold=float(hier_cfg.get('cloud_recognition_threshold', 0.45)),
+            )
+            logger.info("Initialized HierarchicalSearchEngine for edge/cloud vector search")
+        except Exception as e:
+            logger.warning(f"Failed to initialize HierarchicalSearchEngine: {e}")
+
+    recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold, hierarchical_engine=hier_engine)
 
     # Create profile lookup function for database logging
     def profile_lookup(identity: str) -> Optional[str]:

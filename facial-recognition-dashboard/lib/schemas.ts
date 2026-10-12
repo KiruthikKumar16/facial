@@ -392,19 +392,25 @@ export const SystemKpisSchema = z.object({
 }));
 
 export const ModelThresholdsSchema = z.object({
-  recognitionConfidence: numOrZero,
-  livenessScore: numOrZero,
-  unknownFaceRetentionDays: numOrZero,
-  autoAlertOnBlacklist: boolOrFalse,
+  recognitionConfidence: z.number().optional(),
+  livenessScore: z.number().optional(),
+  unknownFaceRetentionDays: z.number().optional(),
+  autoAlertOnBlacklist: z.boolean().optional(),
   recognition_confidence: z.number().optional(),
+  similarity_confidence: z.number().optional(),
+  similarityConfidence: z.number().optional(),
   liveness_score: z.number().optional(),
+  liveness_threshold: z.number().optional(),
+  livenessThreshold: z.number().optional(),
   unknown_face_retention_days: z.number().optional(),
-  auto_alert_on_blacklist: z.boolean().optional()
+  auto_alert_on_blacklist: z.boolean().optional(),
+  age_variance: z.number().optional(),
+  ageVariance: z.number().optional()
 }).transform(raw => ({
-  recognitionConfidence: raw.recognition_confidence ?? raw.recognitionConfidence,
-  livenessScore: raw.liveness_score ?? raw.livenessScore,
-  unknownFaceRetentionDays: raw.unknown_face_retention_days ?? raw.unknownFaceRetentionDays,
-  autoAlertOnBlacklist: raw.auto_alert_on_blacklist ?? raw.autoAlertOnBlacklist
+  recognitionConfidence: raw.similarity_confidence ?? raw.similarityConfidence ?? raw.recognition_confidence ?? raw.recognitionConfidence ?? 60,
+  livenessScore: raw.liveness_threshold ?? raw.livenessThreshold ?? raw.liveness_score ?? raw.livenessScore ?? 50,
+  unknownFaceRetentionDays: raw.unknown_face_retention_days ?? raw.unknownFaceRetentionDays ?? 30,
+  autoAlertOnBlacklist: raw.auto_alert_on_blacklist ?? raw.autoAlertOnBlacklist ?? true
 }));
 
 export const UnknownCaptureSchema = z.object({

@@ -96,6 +96,27 @@ def ensure_detection_event_id_column():
                     )
                 )
 
+        if engine.dialect.name == "postgresql":
+            try:
+                if inspector.has_table("embeddings"):
+                    connection.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_embeddings_vector_hnsw "
+                            "ON embeddings USING hnsw (vector vector_cosine_ops) "
+                            "WITH (m = 16, ef_construction = 64)"
+                        )
+                    )
+                if inspector.has_table("detections"):
+                    connection.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_detections_embedding_vector_hnsw "
+                            "ON detections USING hnsw (embedding_vector vector_cosine_ops) "
+                            "WITH (m = 16, ef_construction = 64)"
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"Could not ensure HNSW indexes on PostgreSQL: {e}")
+
 
 def get_db():
     """Dependency for FastAPI to inject database session."""

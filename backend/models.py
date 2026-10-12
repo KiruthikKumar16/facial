@@ -5,7 +5,7 @@ from config import IST
 def ist_now():
     return datetime.now(IST)
 
-from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, Text, Enum as SQLEnum, TypeDecorator
+from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, Text, Enum as SQLEnum, TypeDecorator, Index
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
@@ -144,6 +144,15 @@ class Profile(Base):
 class Embedding(Base):
     """Face embedding vector (pgvector)."""
     __tablename__ = "embeddings"
+    __table_args__ = (
+        Index(
+            "ix_embeddings_vector_hnsw",
+            "vector",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"vector": "vector_cosine_ops"},
+        ),
+    )
     
     id = Column(String, primary_key=True, index=True)
     profile_id = Column(String, ForeignKey("profiles.id"), nullable=False, index=True)
@@ -158,6 +167,15 @@ class Embedding(Base):
 class Detection(Base):
     """Individual face detection event."""
     __tablename__ = "detections"
+    __table_args__ = (
+        Index(
+            "ix_detections_embedding_vector_hnsw",
+            "embedding_vector",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding_vector": "vector_cosine_ops"},
+        ),
+    )
     
     id = Column(String, primary_key=True, index=True)
     event_id = Column(String, unique=True, nullable=True, index=True)  # Idempotency key (deterministic SHA-256)

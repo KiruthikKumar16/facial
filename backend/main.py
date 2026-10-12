@@ -25,23 +25,28 @@ from starlette.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, text, case, select, or_
 
+import hmac
+from jose import jwt
+from auth import SECRET_KEY, ALGORITHM
+
 import cv2
 import numpy as np
 
 import sys
 import os
 import asyncio
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from config import settings
-
-if os.environ.get("SENTRY_DSN"):
-    sentry_sdk.init(
-        dsn=os.environ.get("SENTRY_DSN"),
-        enable_tracing=True,
-        traces_sample_rate=1.0,
-        profiles_sample_rate=1.0,
-    )
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    if os.environ.get("SENTRY_DSN"):
+        sentry_sdk.init(
+            dsn=os.environ.get("SENTRY_DSN"),
+            enable_tracing=True,
+            traces_sample_rate=1.0,
+            profiles_sample_rate=1.0,
+        )
+except ImportError:
+    sentry_sdk = None
 import yaml
 from pathlib import Path
 
@@ -620,7 +625,7 @@ async def video_push(camera_id: str, websocket: WebSocket):
     """
     expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
     api_key = websocket.query_params.get("api_key", "")
-    if api_key != expected_key:
+    if not (api_key and hmac.compare_digest(api_key, expected_key)):
         await websocket.close(code=4003, reason="Invalid API key")
         return
 
@@ -642,9 +647,31 @@ async def video_push(camera_id: str, websocket: WebSocket):
 
 # ==================== WebSocket Endpoints ====================
 
+async def authenticate_ws(websocket: WebSocket) -> bool:
+    """Validate query token (JWT) or API key before accepting WebSocket connection."""
+    token = websocket.query_params.get("token")
+    if token:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            if payload.get("sub"):
+                return True
+        except Exception:
+            pass
+
+    api_key = websocket.query_params.get("api_key")
+    expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
+    if api_key and hmac.compare_digest(api_key, expected_key):
+        return True
+
+    return False
+
+
 @app.websocket("/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
     """WebSocket endpoint for real-time alerts."""
+    if not await authenticate_ws(websocket):
+        await websocket.close(code=4001, reason="Unauthorized: invalid or missing token")
+        return
     await manager.connect("alerts", websocket)
     try:
         while True:
@@ -657,6 +684,9 @@ async def websocket_alerts(websocket: WebSocket):
 @app.websocket("/ws/cameras")
 async def websocket_cameras(websocket: WebSocket):
     """WebSocket endpoint for camera health updates."""
+    if not await authenticate_ws(websocket):
+        await websocket.close(code=4001, reason="Unauthorized: invalid or missing token")
+        return
     await manager.connect("cameras", websocket)
     try:
         while True:
@@ -669,6 +699,9 @@ async def websocket_cameras(websocket: WebSocket):
 @app.websocket("/ws/kpis")
 async def websocket_kpis(websocket: WebSocket):
     """WebSocket endpoint for real-time KPIs."""
+    if not await authenticate_ws(websocket):
+        await websocket.close(code=4001, reason="Unauthorized: invalid or missing token")
+        return
     await manager.connect("kpis", websocket)
     try:
         while True:

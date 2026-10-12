@@ -12,6 +12,78 @@ import numpy as np
 from insightface.app import FaceAnalysis  # type: ignore[reportMissingTypeStubs]
 from insightface.app.common import Face
 
+ARCFACE_REFERENCE_LANDMARKS_112 = np.array([
+    [38.2946, 51.6963],  # left eye
+    [73.5318, 51.5014],  # right eye
+    [56.0252, 71.7366],  # nose tip
+    [41.5493, 92.3655],  # left mouth corner
+    [70.7299, 92.2041],  # right mouth corner
+], dtype=np.float32)
+
+
+def align_face_crop(
+    frame: np.ndarray,
+    bbox: List[int],
+    kps: Optional[np.ndarray] = None,
+    target_size: Tuple[int, int] = (112, 112),
+) -> Optional[np.ndarray]:
+    """
+    Perform 5-point landmark similarity transformation face alignment (ArcFace standard),
+    or aspect-preserving squared crop if landmarks are unavailable.
+    """
+    if kps is not None and len(kps) == 5:
+        try:
+            kps_arr = np.asarray(kps, dtype=np.float32)
+            ref_pts = ARCFACE_REFERENCE_LANDMARKS_112
+            if target_size != (112, 112):
+                scale_x = target_size[0] / 112.0
+                scale_y = target_size[1] / 112.0
+                ref_pts = ref_pts * np.array([scale_x, scale_y], dtype=np.float32)
+            M, _ = cv2.estimateAffinePartial2D(kps_arr, ref_pts)
+            if M is not None:
+                aligned = cv2.warpAffine(frame, M, target_size, borderValue=0.0)
+                return aligned
+        except Exception as e:
+            logging.getLogger(__name__).debug("5-point landmark alignment failed: %s", e)
+
+    # Fallback: Aspect-ratio preserving square crop with 15% margin
+    x0, y0, x1, y1 = [int(v) for v in bbox]
+    w = x1 - x0
+    h = y1 - y0
+    if w <= 0 or h <= 0:
+        return None
+
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    side = max(w, h) * 1.15
+    half = side / 2.0
+
+    sq_x0 = int(round(cx - half))
+    sq_y0 = int(round(cy - half))
+    sq_x1 = int(round(cx + half))
+    sq_y1 = int(round(cy + half))
+
+    pad_top = max(0, -sq_y0)
+    pad_left = max(0, -sq_x0)
+    pad_bottom = max(0, sq_y1 - frame.shape[0])
+    pad_right = max(0, sq_x1 - frame.shape[1])
+
+    crop_y0 = max(0, sq_y0)
+    crop_y1 = min(frame.shape[0], sq_y1)
+    crop_x0 = max(0, sq_x0)
+    crop_x1 = min(frame.shape[1], sq_x1)
+
+    crop = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+    if crop.size == 0:
+        return None
+
+    if pad_top > 0 or pad_bottom > 0 or pad_left > 0 or pad_right > 0:
+        crop = cv2.copyMakeBorder(crop, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
+    aligned = cv2.resize(crop, target_size, interpolation=cv2.INTER_LINEAR)
+    return aligned
+
+
 class InsightFaceDetector:
     def __init__(
         self,
@@ -161,17 +233,35 @@ class InsightFaceDetector:
 
     def extract_embedding(self, frame: np.ndarray, face_dict: Dict[str, Any]) -> Optional[np.ndarray]:
         if self.use_fast_detector and self.rec_model is not None:
-            bbox = face_dict['bbox']
-            x0, y0, x1, y1 = [int(v) for v in bbox]
-            crop = frame[max(0, y0):min(frame.shape[0], y1), max(0, x0):min(frame.shape[1], x1)]
-            if crop.size == 0:
+            aligned = align_face_crop(
+                frame,
+                face_dict['bbox'],
+                kps=face_dict.get('kps'),
+                target_size=(self.rec_input_size, self.rec_input_size),
+            )
+            if aligned is None or aligned.size == 0:
                 return None
-            aligned = cv2.resize(crop, (self.rec_input_size, self.rec_input_size))
             return np.asarray(self.rec_model.get_feat(aligned), dtype=np.float32).flatten()
 
         if 'recognition' not in self.app.models:
             return None
-        face = Face(bbox=np.array(face_dict['bbox']), kps=face_dict.get('kps'))
+
+        bbox = face_dict['bbox']
+        kps = face_dict.get('kps')
+        if kps is None:
+            x0, y0, x1, y1 = [int(v) for v in bbox]
+            w, h = x1 - x0, y1 - y0
+            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            side = max(w, h)
+            half = side / 2.0
+            bbox = [
+                int(max(0, cx - half)),
+                int(max(0, cy - half)),
+                int(min(frame.shape[1], cx + half)),
+                int(min(frame.shape[0], cy + half)),
+            ]
+
+        face = Face(bbox=np.array(bbox), kps=kps)
         
         if 'genderage' in self.app.models:
             self.app.models['genderage'].get(frame, face)

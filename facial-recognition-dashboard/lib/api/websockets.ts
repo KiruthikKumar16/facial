@@ -1,6 +1,10 @@
-import { WS_URL, authFetch, handleResponse, apiUrl } from './config';
+import { WS_URL } from './config';
 
-const wsUrl = (path: string) => `${WS_URL}/ws/${path}`;
+const wsUrl = (path: string) => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('sentinel_token') : null;
+  const base = `${WS_URL}/ws/${path}`;
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+};
 
 export const connectAlertsWebSocket = (
   onMessage: (data: unknown) => void,

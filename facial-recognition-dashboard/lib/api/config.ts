@@ -191,11 +191,15 @@ export const fetchVersionBundle = async (): Promise<VersionBundle> => {
 }
 
 export function getCameraStreamUrl(cameraId: string): string {
-  return apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/stream`)
+  const token = typeof window !== 'undefined' ? localStorage.getItem('sentinel_token') : null
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/stream${query}`)
 }
 
 export function getCameraSnapshotUrl(cameraId: string): string {
-  return apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/stream/snapshot`)
+  const token = typeof window !== 'undefined' ? localStorage.getItem('sentinel_token') : null
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return apiUrl(`/api/cameras/${encodeURIComponent(cameraId)}/stream/snapshot${query}`)
 }
 
 export function hashString(s: string): number {

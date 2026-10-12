@@ -54,9 +54,62 @@ def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
 
 
 
+def _get_duplicates_fallback(db: Session) -> list[DuplicateCandidateResponse]:
+    """In-memory fallback for SQLite or non-PostgreSQL dialects where pgvector <=> is unavailable."""
+    import numpy as np
+    profiles = db.query(Profile).filter(Profile.embedding_count > 0).all()
+    candidates = []
+    seen = set()
+
+    profile_vecs = []
+    for p in profiles:
+        for emb in p.embeddings:
+            if emb.vector:
+                try:
+                    vec = np.array(emb.vector, dtype=np.float32).flatten()
+                    norm = np.linalg.norm(vec)
+                    if norm >= 1e-6:
+                        profile_vecs.append((p, vec / norm))
+                except Exception:
+                    continue
+
+    for i in range(len(profile_vecs)):
+        p1, v1 = profile_vecs[i]
+        for j in range(i + 1, len(profile_vecs)):
+            p2, v2 = profile_vecs[j]
+            if p1.id == p2.id:
+                continue
+            pair = tuple(sorted([p1.id, p2.id]))
+            if pair in seen:
+                continue
+            sim = float(np.dot(v1, v2))
+            if sim >= 0.90:
+                seen.add(pair)
+                candidates.append(DuplicateCandidateResponse(
+                    id=f"{p1.id}:{p2.id}",
+                    profileAId=p1.id,
+                    profileAName=p1.name,
+                    profileARole=p1.role.value if hasattr(p1.role, 'value') else str(p1.role),
+                    profileAAvatarTone=snapshot_tone_for(p1.id),
+                    profileBId=p2.id,
+                    profileBName=p2.name,
+                    profileBRole=p2.role.value if hasattr(p2.role, 'value') else str(p2.role),
+                    profileBAvatarTone=snapshot_tone_for(p2.id),
+                    cosineSimilarity=round(sim, 4),
+                    sharedSightings=0,
+                ))
+                if len(candidates) >= 20:
+                    return candidates
+    return candidates
+
+
 @router.get("/duplicates", response_model=list[DuplicateCandidateResponse])
 def get_duplicates(db: Session = Depends(get_db)):
-    """Find duplicate profiles using pgvector."""
+    """Find duplicate profiles using pgvector (with in-memory SQLite fallback)."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return _get_duplicates_fallback(db)
+
     sql = text("""
         SELECT e1.profile_id as p1_id, p1.name as p1_name, p1.role as p1_role, p1.created_at as p1_created,
                e2.profile_id as p2_id, p2.name as p2_name, p2.role as p2_role, p2.created_at as p2_created,

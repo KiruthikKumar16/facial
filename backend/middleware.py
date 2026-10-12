@@ -1,4 +1,5 @@
 import os
+import hmac
 from jose import jwt
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -20,11 +21,21 @@ class JWTMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        # Edge node requests authenticated via X-API-Key
-        api_key = request.headers.get("x-api-key")
+        # Edge node requests authenticated via X-API-Key (header or query param)
+        api_key = request.headers.get("x-api-key") or request.query_params.get("api_key")
         expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
-        if api_key and api_key == expected_key:
+        if api_key and hmac.compare_digest(api_key, expected_key):
             return await call_next(request)
+
+        # Query token authentication for media/stream endpoints (e.g. <img> tags)
+        query_token = request.query_params.get("token")
+        if query_token:
+            try:
+                payload = jwt.decode(query_token, SECRET_KEY, algorithms=[ALGORITHM])
+                request.state.user = payload.get("sub")
+                return await call_next(request)
+            except Exception:
+                return _get_401_response("Invalid or expired stream token")
             
         auth_header = request.headers.get("Authorization")
         

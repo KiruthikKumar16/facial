@@ -126,12 +126,25 @@ async def create_detection(
                 previous_timestamp = previous_timestamp.replace(tzinfo=None)
             travel_seconds = (req_timestamp_ist - previous_timestamp).total_seconds()
             
+            sim = float(req.confidence)
+            if previous.embedding_vector is not None and req.embedding:
+                try:
+                    import numpy as np
+                    v_prev = np.array(previous.embedding_vector, dtype=np.float32).flatten()
+                    v_curr = np.array(req.embedding, dtype=np.float32).flatten()
+                    norm_prev = np.linalg.norm(v_prev)
+                    norm_curr = np.linalg.norm(v_curr)
+                    if norm_prev >= 1e-6 and norm_curr >= 1e-6:
+                        sim = float(np.dot(v_prev, v_curr) / (norm_prev * norm_curr))
+                except Exception:
+                    sim = float(req.confidence)
+
             # Cross-Camera continuity evaluation with topology and temporal constraints
             classification, reasoning = continuity_tracker.evaluate_transition(
                 from_camera_id=previous.camera_id,
                 to_camera_id=req.camera_id,
                 elapsed_seconds=max(0.001, travel_seconds),
-                embedding_similarity=req.confidence,
+                embedding_similarity=sim,
             )
             
             db.add(CameraTransition(
@@ -143,7 +156,7 @@ async def create_detection(
                 travel_seconds=travel_seconds,
                 confidence=req.confidence,
                 transition_type=classification.value,
-                similarity=req.confidence,
+                similarity=sim,
                 temporal_score=reasoning.temporal_score,
                 reasoning_metadata=json.dumps(reasoning.to_dict()),
             ))

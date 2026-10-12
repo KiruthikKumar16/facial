@@ -77,10 +77,20 @@ export function adaptThresholds(raw: unknown) {
 
 
 export function reverseAdaptThresholds(t: any) {
+  const conf = (t.recognitionConfidence !== undefined && t.recognitionConfidence > 1) 
+    ? t.recognitionConfidence / 100 
+    : (t.recognitionConfidence ?? t.similarity_confidence ?? 0.60);
+  const live = (t.livenessScore !== undefined && t.livenessScore > 1) 
+    ? t.livenessScore / 100 
+    : (t.livenessScore ?? t.liveness_threshold ?? 0.50);
+
   return {
-    recognition_confidence: t.recognitionConfidence,
-    liveness_score: t.livenessScore,
-    unknown_face_retention_days: t.unknownFaceRetentionDays,
-    auto_alert_on_blacklist: t.autoAlertOnBlacklist
+    similarity_confidence: conf,
+    liveness_threshold: live,
+    age_variance: t.ageVariance ?? t.age_variance ?? 5.0,
+    recognition_confidence: conf,
+    liveness_score: live,
+    unknown_face_retention_days: t.unknownFaceRetentionDays ?? t.unknown_face_retention_days ?? 30,
+    auto_alert_on_blacklist: t.autoAlertOnBlacklist ?? t.auto_alert_on_blacklist ?? true,
   };
 }

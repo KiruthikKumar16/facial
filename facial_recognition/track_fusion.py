@@ -6,6 +6,7 @@ top-1 vs top-2 margin confidence testing, temporal decay, and track lifecycle ma
 """
 
 from __future__ import annotations
+import logging
 import math
 import time
 from collections import deque
@@ -14,6 +15,8 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class TrackStatus(str, Enum):
@@ -35,6 +38,7 @@ class FaceObservation:
     track_id: Optional[int] = None
     gender: Optional[str] = None
     age: Optional[int] = None
+    liveness_score: float = 1.0
 
 
 class FaceTrack:
@@ -73,6 +77,8 @@ class FaceTrack:
         self.is_finalized: bool = False
         self.finalized_identity: Optional[str] = None
         self.finalized_at: Optional[float] = None
+        self.has_been_logged: bool = False
+        self.has_been_saved: bool = False
 
         # Add first observation
         self.add_observation(initial_observation)
@@ -159,6 +165,7 @@ class FaceTrack:
         finalization_margin: float = 0.05,
         min_observations_to_finalize: int = 3,
         current_time: Optional[float] = None,
+        hierarchical_search_engine: Optional[Any] = None,
     ) -> Tuple[str, float, bool]:
         """
         Perform gallery matching using the fused embedding representation.
@@ -168,34 +175,40 @@ class FaceTrack:
             return self.finalized_identity, self.fused_confidence, True
 
         fused_emb = self.compute_fused_embedding(current_time)
-        if fused_emb is None or gallery_embeddings.shape[0] == 0 or len(gallery_labels) == 0:
+        if fused_emb is None:
             self.fused_identity = "Unknown"
             self.fused_confidence = 0.0
             self.top2_margin = 0.0
             return "Unknown", 0.0, False
 
-        # Compute cosine similarity across all gallery identities
-        sims = np.dot(gallery_embeddings, fused_emb) / (
-            np.linalg.norm(gallery_embeddings, axis=1) * np.linalg.norm(fused_emb) + 1e-10
-        )
+        best_score = 0.0
+        best_label = "Unknown"
+        margin = 0.0
 
-        top_indices = np.argsort(sims)[::-1]
-        best_idx = int(top_indices[0])
-        best_score = float(sims[best_idx])
+        if gallery_embeddings.shape[0] > 0 and len(gallery_labels) > 0:
+            # Compute cosine similarity across all gallery identities
+            sims = np.dot(gallery_embeddings, fused_emb) / (
+                np.linalg.norm(gallery_embeddings, axis=1) * np.linalg.norm(fused_emb) + 1e-10
+            )
 
-        # Compute margin to second best distinct identity
-        best_label = gallery_labels[best_idx]
-        second_score = 0.0
-        for idx in top_indices[1:]:
-            if gallery_labels[idx] != best_label:
-                second_score = float(sims[idx])
-                break
+            top_indices = np.argsort(sims)[::-1]
+            best_idx = int(top_indices[0])
+            best_score = float(sims[best_idx])
 
-        margin = max(0.0, best_score - second_score)
+            # Compute margin to second best distinct identity
+            best_label = gallery_labels[best_idx]
+            second_score = 0.0
+            for idx in top_indices[1:]:
+                if gallery_labels[idx] != best_label:
+                    second_score = float(sims[idx])
+                    break
+
+            margin = max(0.0, best_score - second_score)
+
         self.top2_margin = margin
         self.fused_confidence = best_score
 
-        if best_score >= similarity_threshold:
+        if best_score >= similarity_threshold and best_label != "Unknown":
             self.fused_identity = best_label
         else:
             self.fused_identity = "Unknown"
@@ -217,6 +230,23 @@ class FaceTrack:
             self.finalized_identity = self.fused_identity
             self.finalized_at = current_time or self.last_updated
             self.status = TrackStatus.FINALIZED
+        elif (
+            self.valid_embeddings_count >= min_observations_to_finalize
+            and self.fused_identity == "Unknown"
+            and hierarchical_search_engine is not None
+        ):
+            try:
+                res = hierarchical_search_engine.search(fused_emb)
+                tier_val = getattr(res.search_tier, 'value', str(res.search_tier))
+                if tier_val in ("CLOUD_RESOLVED", "LOCAL_HIGH_CONFIDENCE") and res.identity != "Unknown":
+                    self.fused_identity = res.identity
+                    self.fused_confidence = float(res.confidence)
+                    self.is_finalized = True
+                    self.finalized_identity = res.identity
+                    self.finalized_at = current_time or self.last_updated
+                    self.status = TrackStatus.FINALIZED
+            except Exception as e:
+                logger.warning(f"Hierarchical track search failed: {e}")
 
         return self.fused_identity, self.fused_confidence, self.is_finalized
 
@@ -238,6 +268,7 @@ class TemporalTrackManager:
         temporal_decay_lambda: float = 0.1,
         max_active_tracks: int = 50,
         iou_association_threshold: float = 0.25,
+        hierarchical_search_engine: Optional[Any] = None,
     ):
         self.window_sec = max_observation_window_seconds
         self.max_obs = max_observations_per_track
@@ -249,6 +280,7 @@ class TemporalTrackManager:
         self.decay_lambda = temporal_decay_lambda
         self.max_active_tracks = max_active_tracks
         self.iou_thresh = iou_association_threshold
+        self.hierarchical_search_engine = hierarchical_search_engine
 
         self.tracks: Dict[int, FaceTrack] = {}
         self._next_track_id: int = 1
@@ -342,6 +374,7 @@ class TemporalTrackManager:
                 finalization_margin=self.margin,
                 min_observations_to_finalize=self.min_obs,
                 current_time=now,
+                hierarchical_search_engine=self.hierarchical_search_engine,
             )
 
         # Garbage collect terminated tracks and bound memory

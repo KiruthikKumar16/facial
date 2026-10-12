@@ -178,6 +178,7 @@ class HierarchicalSearchEngine:
         cloud_recognition_threshold: float = 0.50,
         max_staleness_seconds: float = 3600.0,  # 1 hour
         cloud_search_fn: Optional[Callable[[List[float]], Dict[str, Any]]] = None,
+        embedding_model_version: str = "w600k_mbf_v1",
     ) -> None:
         self.gallery_path = Path(gallery_path) if gallery_path else None
         self.api_url = (api_url or os.environ.get("API_URL", "http://localhost:1223")).rstrip("/")
@@ -188,6 +189,7 @@ class HierarchicalSearchEngine:
         self.cloud_threshold = float(cloud_recognition_threshold)
         self.max_staleness_seconds = float(max_staleness_seconds)
         self.cloud_search_fn = cloud_search_fn
+        self.embedding_model_version = embedding_model_version
 
         # Load local gallery
         if self.gallery_path and self.gallery_path.exists():
@@ -268,6 +270,7 @@ class HierarchicalSearchEngine:
             "embedding": embedding.tolist(),
             "top_k": 1,
             "threshold": self.cloud_threshold,
+            "embedding_model_version": self.embedding_model_version,
         }).encode("utf-8")
 
         try:

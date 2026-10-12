@@ -1,7 +1,9 @@
 import os
 import time
 import logging
-
+import threading
+import urllib.request
+import json
 import numpy as np
 
 
@@ -9,15 +11,27 @@ logger = logging.getLogger(__name__)
 
 
 class Recognizer:
-    def __init__(self, gallery_path: str, threshold: float) -> None:
+    def __init__(self, gallery_path: str, threshold: float, hierarchical_engine: Any = None) -> None:
         self.threshold = threshold
+        self.hierarchical_engine = hierarchical_engine
         self.labels: list[str] = []
         self.embeddings: np.ndarray = np.zeros((0, 512), dtype=np.float32)
+        self.lock = threading.RLock()
         self._load_gallery(gallery_path)
 
+    def _normalize_embeddings(self, embs: np.ndarray) -> np.ndarray:
+        """Pre-normalize embeddings so cosine similarity is a fast single matrix-vector dot product."""
+        if embs.shape[0] == 0:
+            return np.zeros((0, 512), dtype=np.float32)
+        arr = np.asarray(embs, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-10
+        return (arr / norms).astype(np.float32)
+
     def _load_gallery(self, gallery_path: str) -> None:
-        import threading
-        
+        if not gallery_path:
+            return
         def sync():
             while True:
                 time.sleep(300)
@@ -31,8 +45,6 @@ class Recognizer:
         t.start()
         
     def _fetch_gallery_from_api(self, fallback_path: str) -> bool:
-        import urllib.request
-        import json
         api_url = os.environ.get("API_URL", "http://localhost:1223").rstrip('/')
         api_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
         try:
@@ -44,11 +56,11 @@ class Recognizer:
                 embeddings = data.get("embeddings", [])
                 
                 if labels and embeddings:
-                    self.labels = labels
-                    self.embeddings = np.asarray(embeddings, dtype=np.float32)
-                    if self.embeddings.ndim == 1:
-                        self.embeddings = self.embeddings.reshape(1, -1)
-                        
+                    norm_embs = self._normalize_embeddings(np.asarray(embeddings, dtype=np.float32))
+                    with self.lock:
+                        self.labels = labels
+                        self.embeddings = norm_embs
+
                     if fallback_path:
                         try:
                             np.savez(fallback_path, labels=self.labels, embeddings=self.embeddings)
@@ -63,36 +75,63 @@ class Recognizer:
 
     def _load_from_file(self, gallery_path: str) -> None:
         if not gallery_path or not os.path.exists(gallery_path):
-            self.labels = []
-            self.embeddings = np.zeros((0, 512), dtype=np.float32)
+            with self.lock:
+                self.labels = []
+                self.embeddings = np.zeros((0, 512), dtype=np.float32)
             return
 
         try:
             gallery = np.load(gallery_path, allow_pickle=True)
-            self.labels = gallery['labels'].tolist() if 'labels' in gallery else []
+            labels = gallery['labels'].tolist() if 'labels' in gallery else []
             embeddings = gallery['embeddings'] if 'embeddings' in gallery else np.zeros((0, 512), dtype=np.float32)
-            self.embeddings = np.asarray(embeddings, dtype=np.float32)
-            if self.embeddings.ndim == 1:
-                self.embeddings = self.embeddings.reshape(1, -1)
+            norm_embs = self._normalize_embeddings(embeddings)
+            with self.lock:
+                self.labels = labels
+                self.embeddings = norm_embs
             logger.info(f"Loaded gallery from local cache: {len(self.labels)} identities.")
         except Exception as e:
             logger.error(f"Error loading local gallery cache: {e}")
-            self.labels = []
-            self.embeddings = np.zeros((0, 512), dtype=np.float32)
+            with self.lock:
+                self.labels = []
+                self.embeddings = np.zeros((0, 512), dtype=np.float32)
 
     def recognize(self, embedding: np.ndarray) -> tuple[str, float]:
         start = time.perf_counter()
-        if self.embeddings.shape[0] == 0:
-            logger.debug('No gallery embeddings available')
-            return 'Unknown', 0.0
+        with self.lock:
+            q_norm = np.linalg.norm(embedding)
+            if q_norm < 1e-6:
+                return 'Unknown', 0.0
+            norm_query = (embedding / q_norm).astype(np.float32)
 
-        similarities = np.dot(self.embeddings, embedding) / (
-            np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(embedding) + 1e-10
-        )
-        best_index = int(np.argmax(similarities))
-        best_score = float(similarities[best_index])
-        dur = (time.perf_counter() - start) * 1000.0
-        logger.debug('Recognize took %.2f ms, best_score=%.4f, index=%d', dur, best_score, best_index)
-        if best_score >= self.threshold and best_index < len(self.labels):
-            return self.labels[best_index], best_score
-        return 'Unknown', best_score
+            if self.embeddings.shape[0] == 0 or len(self.labels) == 0:
+                logger.debug('No gallery embeddings available')
+                if self.hierarchical_engine is not None:
+                    try:
+                        res = self.hierarchical_engine.search(norm_query)
+                        tier_val = getattr(res.search_tier, 'value', str(res.search_tier))
+                        if tier_val in ("CLOUD_RESOLVED", "LOCAL_HIGH_CONFIDENCE") and res.identity != "Unknown":
+                            return res.identity, float(res.confidence)
+                    except Exception as e:
+                        logger.warning(f"Hierarchical search fallback failed: {e}")
+                return 'Unknown', 0.0
+
+            similarities = np.dot(self.embeddings, norm_query)
+            best_index = int(np.argmax(similarities))
+            best_score = float(similarities[best_index])
+
+            dur = (time.perf_counter() - start) * 1000.0
+            logger.debug('Recognize took %.2f ms, best_score=%.4f, index=%d', dur, best_score, best_index)
+            if best_score >= self.threshold and best_index < len(self.labels):
+                return self.labels[best_index], best_score
+
+            if self.hierarchical_engine is not None:
+                try:
+                    res = self.hierarchical_engine.search(norm_query)
+                    tier_val = getattr(res.search_tier, 'value', str(res.search_tier))
+                    if tier_val in ("CLOUD_RESOLVED", "LOCAL_HIGH_CONFIDENCE") and res.identity != "Unknown":
+                        return res.identity, float(res.confidence)
+                except Exception as e:
+                    logger.warning(f"Hierarchical search fallback failed: {e}")
+
+            return 'Unknown', best_score
+

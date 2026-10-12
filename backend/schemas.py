@@ -2,7 +2,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Tuple, Dict, Any
-from pydantic import ConfigDict, BaseModel, field_validator
+from pydantic import ConfigDict, BaseModel, field_validator, model_validator
 
 
 # ==================== Enums ====================
@@ -339,11 +339,31 @@ class ModelThreshold(BaseModel):
 
 class ModelThresholdsResponse(BaseModel):
     """Configurable model thresholds for detection/recognition."""
-    similarity_confidence: float
-    liveness_threshold: float
-    age_variance: float
+    similarity_confidence: float = 0.60
+    liveness_threshold: float = 0.50
+    age_variance: float = 5.0
+    unknown_face_retention_days: Optional[float] = 30.0
+    auto_alert_on_blacklist: Optional[bool] = True
     
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def map_aliases(cls, data: Any):
+        if isinstance(data, dict):
+            if 'recognition_confidence' in data and 'similarity_confidence' not in data:
+                data['similarity_confidence'] = data['recognition_confidence']
+            elif 'recognitionConfidence' in data and 'similarity_confidence' not in data:
+                data['similarity_confidence'] = data['recognitionConfidence']
+            if 'liveness_score' in data and 'liveness_threshold' not in data:
+                data['liveness_threshold'] = data['liveness_score']
+            elif 'livenessScore' in data and 'liveness_threshold' not in data:
+                data['liveness_threshold'] = data['livenessScore']
+            if 'autoAlertOnBlacklist' in data and 'auto_alert_on_blacklist' not in data:
+                data['auto_alert_on_blacklist'] = data['autoAlertOnBlacklist']
+            if 'unknownFaceRetentionDays' in data and 'unknown_face_retention_days' not in data:
+                data['unknown_face_retention_days'] = data['unknownFaceRetentionDays']
+        return data
 
 
 # ==================== Forensic Search ====================

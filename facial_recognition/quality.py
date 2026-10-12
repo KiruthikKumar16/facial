@@ -81,6 +81,7 @@ class FaceQualityAssessor:
             'motion_score': 1.0,
             'yaw_symmetry': 1.0,
             'roll_angle': 0.0,
+            'liveness_score': 1.0,
         }
 
         if w >= 5 and h >= 5:
@@ -109,6 +110,9 @@ class FaceQualityAssessor:
             # 5. Motion Score (based on bbox displacement between frames)
             if prev_bbox is not None:
                 metrics['motion_score'] = self._compute_motion_score(bbox, prev_bbox, dt)
+
+            # 6. Face Anti-Spoofing (FAS) / Liveness Assessment
+            metrics['liveness_score'] = self.compute_liveness_score(crop)
 
         # Categorize
         category = self._categorize(metrics)
@@ -203,6 +207,73 @@ class FaceQualityAssessor:
         # Velocity > 400 px/s penalizes score
         motion_score = max(0.0, 1.0 - (velocity / 500.0))
         return float(np.clip(motion_score, 0.0, 1.0))
+
+    def compute_liveness_score(self, bgr_crop: np.ndarray) -> float:
+        """
+        Face Anti-Spoofing (FAS) assessment based on presentation attack detection (PAD):
+        1. Chrominance channel distribution (YCbCr & HSV): Real human faces exhibit natural
+           skin tone variances in Cr/Cb. Flat, synthetic, or printed media often compress
+           or skew chrominance standard deviations.
+        2. High-frequency 2D Fourier power spectrum: Printed halftone dots and display
+           screens create periodic high-frequency moiré spikes, whereas natural skin has smooth
+           spectral roll-off.
+        3. Specular glare / screen reflection: Displays produce unnatural saturated glare spots
+           from backlight/ambient reflection.
+        
+        Returns:
+            liveness_score: float in [0.0, 1.0], where >= 0.50 indicates a genuine live face.
+        """
+        if bgr_crop is None or bgr_crop.size == 0 or bgr_crop.shape[0] < 10 or bgr_crop.shape[1] < 10:
+            return 0.5
+
+        try:
+            # 1. Chrominance Naturalness in YCbCr
+            ycrcb = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2YCrCb)
+            cr = ycrcb[:, :, 1]
+            cb = ycrcb[:, :, 2]
+            cr_std = float(np.std(cr))
+            cb_std = float(np.std(cb))
+            
+            chroma_score = float(np.clip((cr_std + cb_std) / 20.0, 0.0, 1.0))
+            if cr_std < 2.0 and cb_std < 2.0:
+                chroma_score *= 0.2  # Severe penalty for monochrome / flat paper copies
+
+            # 2. High-Frequency Fourier Spectral Analysis (Screen Moiré / Halftone)
+            gray = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2GRAY)
+            small_gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+            f = np.fft.fft2(small_gray)
+            fshift = np.fft.fftshift(f)
+            magnitude_spectrum = np.log(np.abs(fshift) + 1.0)
+            
+            # Mask out DC and low frequencies (radius <= 12)
+            cy, cx = 32, 32
+            y, x = np.ogrid[:64, :64]
+            dist_from_center = np.sqrt((x - cx)**2 + (y - cy)**2)
+            high_freq_mask = dist_from_center > 12
+            high_freq_energy = float(np.mean(magnitude_spectrum[high_freq_mask]))
+            total_energy = float(np.mean(magnitude_spectrum)) + 1e-6
+            
+            hf_ratio = high_freq_energy / total_energy
+            if hf_ratio > 0.85:
+                freq_score = max(0.1, 1.0 - (hf_ratio - 0.85) * 5.0)
+            else:
+                freq_score = min(1.0, hf_ratio / 0.50)
+
+            # 3. Specular Glare / Reflection Highlights
+            v_chan = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2HSV)[:, :, 2]
+            glare_pixels = np.sum(v_chan >= 252)
+            total_pixels = v_chan.size
+            glare_fraction = glare_pixels / float(total_pixels)
+            if glare_fraction > 0.04:
+                glare_score = max(0.1, 1.0 - (glare_fraction * 15.0))
+            else:
+                glare_score = 1.0
+
+            # Composite Liveness Score
+            liveness = (chroma_score * 0.40) + (freq_score * 0.40) + (glare_score * 0.20)
+            return float(round(np.clip(liveness, 0.0, 1.0), 4))
+        except Exception:
+            return 0.5
 
     def _categorize(self, m: Dict[str, float]) -> str:
         """

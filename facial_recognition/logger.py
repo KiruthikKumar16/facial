@@ -116,7 +116,6 @@ class DetectionLogger:
         )
         
         # Background sync worker
-        self.log_queue = queue.Queue()
         self._stop_event = threading.Event()
         self.db_url = db_url
         self.network_monitor = NetworkMonitor()
@@ -171,6 +170,7 @@ class DetectionLogger:
         config_version: Optional[int] = 1,
         version_bundle: Optional[Any] = None,
         provenance: Optional[Any] = None,
+        liveness_score: Optional[float] = None,
     ) -> Optional[str]:
         """
         Log a detection event (main entry point).
@@ -212,25 +212,27 @@ class DetectionLogger:
             "bbox": [left, top, right, bottom],
             "box_formatted": f"[{left}, {top}, {right}, {bottom}]",
             "quality_score": quality_score,
+            "liveness_score": liveness_score,
             "provenance": prov_dict,
             "version_bundle": bundle_dict,
             "embedding": embedding.tolist() if hasattr(embedding, "tolist") else embedding,
         }
 
-        with self.lock:
-            # Check deduplication
-            self._purge_dedup(now_ts)
-            last = self._dedup.get(dedup_key)
-            
-            if last is not None and (now_ts - last) < self._dedup_window:
-                logger.debug(
-                    f"[DEDUPLICATE] {camera_id} {identity} "
-                    f"within {now_ts - last:.1f}s of last event"
-                )
-                return None
+        is_unknown = not identity or identity.strip().lower() in ["unknown", "unregistered"] or identity.startswith("Person ")
 
-            # Mark as seen
-            self._dedup[dedup_key] = now_ts
+        with self.lock:
+            # Check deduplication for identified individuals
+            self._purge_dedup(now_ts)
+            if not is_unknown:
+                last = self._dedup.get(dedup_key)
+                if last is not None and (now_ts - last) < self._dedup_window:
+                    logger.debug(
+                        f"[DEDUPLICATE] {camera_id} {identity} "
+                        f"within {now_ts - last:.1f}s of last event"
+                    )
+                    return None
+                # Mark as seen
+                self._dedup[dedup_key] = now_ts
 
             # Step 1: Persist to SQLite ledger (PRIMARY)
             try:
@@ -266,8 +268,7 @@ class DetectionLogger:
                 except Exception as e:
                     logger.warning(f"Failed to write CSV: {e}")
 
-            # Step 3: Queue for sync (background thread will send to cloud)
-            self.log_queue.put((event_id, camera_id, identity, confidence, bbox, now, age, gender))
+            # Step 3: Event is queued automatically inside ledger.add_event() in sync_queue table
 
             logger.info(
                 f"[{now.isoformat(timespec='seconds')}] "
@@ -515,11 +516,25 @@ class DetectionLogger:
                         method='POST'
                     )
                     with urllib.request.urlopen(req, timeout=10.0) as f:
-                        pass
+                        raw_resp = f.read().decode('utf-8')
+                        resp_data = json.loads(raw_resp) if raw_resp else []
+                    
+                    succeeded_event_ids = {
+                        item.get("event_id") for item in resp_data if isinstance(item, dict) and item.get("event_id")
+                    }
                     latency = (time.time() - start_time) * 1000
-                    self.network_monitor.record_request(True, latency, bytes_sent=req_bytes, events_sent=len(batched_events))
+                    self.network_monitor.record_request(True, latency, bytes_sent=req_bytes, events_sent=len(succeeded_event_ids))
                     for event, payload in batched_events:
-                        handle_result(event, payload)
+                        ev_id = event['event_id']
+                        if ev_id in succeeded_event_ids:
+                            handle_result(event, payload)
+                        else:
+                            handle_result(
+                                event,
+                                payload,
+                                error_reason="Batch item omitted by server (validation or database failure)",
+                                is_fatal=False
+                            )
                 except HTTPError as e:
                     fatal = 400 <= e.code < 500 and e.code != 429
                     latency = (time.time() - start_time) * 1000

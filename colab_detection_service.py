@@ -17,9 +17,11 @@ from pathlib import Path
 import json
 import numpy as np
 import requests
-from datetime import datetime
-from config import IST
-import uuid
+try:
+    from backend.config import IST
+except ImportError:
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

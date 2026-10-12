@@ -31,3 +31,22 @@ def test_auth_login_invalid_credentials():
     """Verify invalid login attempt returns 401."""
     response = client.post("/api/auth/login", data={"username": "wrong", "password": "bad"})
     assert response.status_code == 401
+
+
+def test_websocket_unauthorized_rejection():
+    """Verify connecting to WebSocket channels without token closes with 4001."""
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+    
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/alerts") as ws:
+            pass
+    assert exc_info.value.code == 4001
+
+
+def test_websocket_authorized_connection():
+    """Verify connecting to WebSocket channels with valid JWT token succeeds."""
+    from auth import create_access_token
+    token = create_access_token({"sub": "admin"})
+    with client.websocket_connect(f"/ws/alerts?token={token}") as ws:
+        assert ws is not None

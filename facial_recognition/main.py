@@ -82,7 +82,10 @@ def main():
     remote_enabled = remote_cfg.get('enabled', False)
 
     if remote_enabled:
-        from remote_detector import RemoteInsightFaceDetector
+        try:
+            from facial_recognition.remote_detector import RemoteInsightFaceDetector
+        except ImportError:
+            from remote_detector import RemoteInsightFaceDetector
         detector: Any = RemoteInsightFaceDetector(
             endpoint=remote_cfg.get('endpoint', 'http://localhost:8000/detect'),
             det_size=tuple(remote_cfg.get('det_size', [det_w, det_h])),
@@ -93,7 +96,22 @@ def main():
         logger.info(f"Using remote detector at {remote_cfg.get('endpoint')}")
     else:
         detector: Any = cast(Any, InsightFaceDetector(use_gpu=use_gpu, det_size=(det_w, det_h), model_name=detector_model, fast_detector=fast_detector))
-    recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold)
+    hier_cfg = cfg.get('hierarchical_search', {})
+    hier_engine = None
+    if hier_cfg.get('enabled', False):
+        try:
+            from facial_recognition.hierarchical_search import HierarchicalSearchEngine
+            hier_engine = HierarchicalSearchEngine(
+                gallery_path=gallery_path,
+                local_high_confidence_threshold=float(hier_cfg.get('local_high_confidence_threshold', 0.65)),
+                local_uncertain_threshold=float(hier_cfg.get('local_uncertain_threshold', 0.35)),
+                cloud_recognition_threshold=float(hier_cfg.get('cloud_recognition_threshold', 0.45)),
+            )
+            logger.info("Initialized HierarchicalSearchEngine for edge/cloud vector search")
+        except Exception as e:
+            logger.warning(f"Failed to initialize HierarchicalSearchEngine: {e}")
+
+    recognizer = Recognizer(gallery_path=gallery_path, threshold=threshold, hierarchical_engine=hier_engine)
 
     # Create profile lookup function for database logging
     def profile_lookup(identity: str) -> Optional[str]:
