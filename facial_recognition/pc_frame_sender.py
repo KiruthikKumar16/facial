@@ -36,6 +36,7 @@ def parse_camera_source(source_str: str):
 
 
 def main():
+    global SHOW_PREVIEW
     logger.info("Starting PC Frame Sender...")
     logger.info(f"Remote service endpoint: {REMOTE_URL}/detect")
     logger.info(f"Camera source: {CAMERA_SOURCE} | Target FPS: {TARGET_FPS}")

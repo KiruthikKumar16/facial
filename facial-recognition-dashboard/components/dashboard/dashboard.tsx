@@ -33,20 +33,21 @@ export function Dashboard() {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    const wsAlerts = connectAlertsWebSocket((data: any) => {
-      if (data && data.id) {
+    const wsAlerts = connectAlertsWebSocket((data: unknown) => {
+      const alertData = data as Record<string, unknown> | null
+      if (alertData && alertData.id) {
         try {
-          const newLog = adaptFaceLog(data)
-          queryClient.setQueryData(['face-logs'], (oldData: any) => {
-            if (!oldData) return [newLog]
-            return [newLog, ...oldData].slice(0, 100)
+          const newLog = adaptFaceLog(alertData)
+          queryClient.setQueryData(['face-logs'], (oldData: unknown) => {
+            const list = Array.isArray(oldData) ? oldData : []
+            return [newLog, ...list].slice(0, 100)
           })
           
           if (newLog.status === 'unknown') {
-            const newUnknown = adaptUnknownCapture(data)
-            queryClient.setQueryData(['unknown-captures'], (oldData: any) => {
-              if (!oldData) return [newUnknown]
-              return [newUnknown, ...oldData].slice(0, 100)
+            const newUnknown = adaptUnknownCapture(alertData)
+            queryClient.setQueryData(['unknown-captures'], (oldData: unknown) => {
+              const list = Array.isArray(oldData) ? oldData : []
+              return [newUnknown, ...list].slice(0, 100)
             })
           }
         } catch (e) {

@@ -21,6 +21,14 @@ class JWTMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
+        def _get_401_response(detail: str) -> JSONResponse:
+            resp = JSONResponse(status_code=401, content={"detail": detail})
+            origin = request.headers.get("origin")
+            if origin:
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+            return resp
+
         # Edge node requests authenticated via X-API-Key (header or query param)
         api_key = request.headers.get("x-api-key") or request.query_params.get("api_key")
         expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
@@ -38,14 +46,6 @@ class JWTMiddleware(BaseHTTPMiddleware):
                 return _get_401_response("Invalid or expired stream token")
             
         auth_header = request.headers.get("Authorization")
-        
-        def _get_401_response(detail: str) -> JSONResponse:
-            resp = JSONResponse(status_code=401, content={"detail": detail})
-            origin = request.headers.get("origin")
-            if origin:
-                resp.headers["Access-Control-Allow-Origin"] = origin
-                resp.headers["Access-Control-Allow-Credentials"] = "true"
-            return resp
             
         if not auth_header or not auth_header.startswith("Bearer "):
             return _get_401_response("Missing or invalid authorization header")

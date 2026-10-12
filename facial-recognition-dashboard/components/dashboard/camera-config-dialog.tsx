@@ -6,7 +6,6 @@ import { fetchCameraConfig, saveCameraConfig, rollbackCameraConfig } from '@/lib
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
 import type { Camera, CameraConfigProfile } from '@/lib/types'
 import {
   X,
@@ -15,7 +14,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
-  Layers,
 } from 'lucide-react'
 
 export function CameraConfigDialog({
@@ -45,7 +43,7 @@ export function CameraConfigDialog({
       queryClient.invalidateQueries({ queryKey: ['cameras'] })
       setTimeout(() => setFeedback(null), 4000)
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       setFeedback(`Save failed: ${err.message || 'Unknown error'}`)
     },
   })
@@ -59,7 +57,7 @@ export function CameraConfigDialog({
       queryClient.invalidateQueries({ queryKey: ['cameras'] })
       setTimeout(() => setFeedback(null), 4000)
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       setFeedback(`Rollback failed: ${err.message || 'Unknown error'}`)
     },
   })
@@ -149,7 +147,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={99}
                   step={1}
-                  onValueChange={(v: any) => setDraft({ ...draft, detectionThreshold: (v[0] ?? v) / 100 })}
+                  onValueChange={(v: number | readonly number[]) => setDraft({ ...draft, detectionThreshold: (Array.isArray(v) ? v[0] : v) / 100 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Minimum face detector confidence score</p>
               </div>
@@ -165,7 +163,7 @@ export function CameraConfigDialog({
                   min={20}
                   max={99}
                   step={1}
-                  onValueChange={(v: any) => setDraft({ ...draft, recognitionThreshold: (v[0] ?? v) / 100 })}
+                  onValueChange={(v: number | readonly number[]) => setDraft({ ...draft, recognitionThreshold: (Array.isArray(v) ? v[0] : v) / 100 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Minimum cosine similarity to confirm identity match</p>
               </div>
@@ -181,7 +179,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={100}
                   step={1}
-                  onValueChange={(v: any) => setDraft({ ...draft, qualityThreshold: (v[0] ?? v) })}
+                  onValueChange={(v: number | readonly number[]) => setDraft({ ...draft, qualityThreshold: (Array.isArray(v) ? v[0] : v) })}
                 />
                 <p className="text-[11px] text-muted-foreground">Minimum face sharpness/pose score to accept frame embedding</p>
               </div>
@@ -197,7 +195,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={100}
                   step={5}
-                  onValueChange={(v: any) => setDraft({ ...draft, samplingRate: (v[0] ?? v) / 100 })}
+                  onValueChange={(v: number | readonly number[]) => setDraft({ ...draft, samplingRate: (Array.isArray(v) ? v[0] : v) / 100 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Edge processing frame stride (1.0 = full stream)</p>
               </div>
@@ -213,7 +211,7 @@ export function CameraConfigDialog({
                   min={10}
                   max={100}
                   step={5}
-                  onValueChange={(v: any) => setDraft({ ...draft, temporalWindow: (v[0] ?? v) / 10 })}
+                  onValueChange={(v: number | readonly number[]) => setDraft({ ...draft, temporalWindow: (Array.isArray(v) ? v[0] : v) / 10 })}
                 />
                 <p className="text-[11px] text-muted-foreground">Observation window for quality-weighted identity aggregation</p>
               </div>
