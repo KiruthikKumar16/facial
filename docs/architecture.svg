@@ -1,59 +1,341 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420" viewBox="0 0 1000 420">
-  <style>
-    .box { fill:#ffffff; stroke:#2b6cb0; stroke-width:2; rx:8; ry:8 }
-    .text { font-family: Arial, Helvetica, sans-serif; font-size:14px; fill:#1a202c }
-    .title { font-weight:700; font-size:13px }
-    .arrow { stroke:#4a5568; stroke-width:2; fill:none; marker-end:url(#arrowhead) }
-  </style>
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="660" viewBox="0 0 1240 660" style="background:#0b0f19; font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
   <defs>
-    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#4a5568" />
+    <!-- Card Gradients -->
+    <linearGradient id="cardBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151d30"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="tierBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#090d16"/>
+    </linearGradient>
+
+    <!-- Accent Highlights -->
+    <linearGradient id="gradEdge" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="gradGpu" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="gradData" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="gradUi" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#d946ef"/>
+      <stop offset="100%" stop-color="#ec4899"/>
+    </linearGradient>
+
+    <!-- Markers -->
+    <marker id="mBlue" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#38bdf8"/>
     </marker>
+    <marker id="mPurple" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#c084fc"/>
+    </marker>
+    <marker id="mGreen" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#34d399"/>
+    </marker>
+    <marker id="mRose" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#f43f5e"/>
+    </marker>
+
+    <!-- Soft Drop Shadow -->
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
   </defs>
 
-  <!-- Boxes -->
-  <rect x="20" y="30" width="160" height="60" class="box"/>
-  <text x="100" y="60" class="text" text-anchor="middle">Camera (webcam / RTSP)</text>
+  <!-- ==================== HEADER ==================== -->
+  <g transform="translate(48, 30)">
+    <circle cx="16" cy="16" r="16" fill="#1e293b"/>
+    <text x="16" y="22" font-size="15" fill="#38bdf8" text-anchor="middle" font-weight="700">❖</text>
+    <text x="44" y="16" font-size="18" font-weight="700" fill="#f8fafc" letter-spacing="0.3">FACIAL RECOGNITION PLATFORM</text>
+    <text x="44" y="32" font-size="12" font-weight="400" fill="#94a3b8">System Architecture — Edge Ingestion • GPU Computing • Vector Search • Real-Time SOC</text>
 
-  <rect x="220" y="30" width="160" height="60" class="box"/>
-  <text x="300" y="60" class="text" text-anchor="middle">Capture Thread</text>
+    <!-- Top Status Badges -->
+    <g transform="translate(860, 2)">
+      <rect x="0" y="0" width="115" height="24" rx="12" fill="#14532d" opacity="0.6" stroke="#22c55e" stroke-width="0.8"/>
+      <circle cx="12" cy="12" r="3.5" fill="#4ade80"/>
+      <text x="22" y="16" font-size="10.5" font-weight="600" fill="#dcfce7">ONLINE SYNC</text>
 
-  <rect x="420" y="30" width="160" height="60" class="box"/>
-  <text x="500" y="60" class="text" text-anchor="middle">Detector (SCRFD / Cascade)</text>
+      <rect x="125" y="0" width="140" height="24" rx="12" fill="#312e81" opacity="0.6" stroke="#6366f1" stroke-width="0.8"/>
+      <circle cx="137" cy="12" r="3.5" fill="#818cf8"/>
+      <text x="147" y="16" font-size="10.5" font-weight="600" fill="#e0e7ff">CUDA ACCELERATED</text>
+    </g>
+  </g>
 
-  <rect x="620" y="30" width="160" height="60" class="box"/>
-  <text x="700" y="60" class="text" text-anchor="middle">Embedder (ArcFace / ONNX)</text>
+  <!-- ==================== COLUMN 1: EDGE CAPTURE & CV ==================== -->
+  <g transform="translate(48, 85)" filter="url(#cardShadow)">
+    <rect width="250" height="475" rx="10" fill="url(#tierBg)" stroke="#1e293b" stroke-width="1.2"/>
+    
+    <!-- Tier Header -->
+    <rect x="0" y="0" width="250" height="40" rx="10" fill="#0f172a"/>
+    <rect x="16" y="14" width="4" height="14" rx="2" fill="#38bdf8"/>
+    <text x="28" y="26" font-size="13" font-weight="700" fill="#f1f5f9">Edge CV Nodes</text>
+    <text x="175" y="25" font-size="10.5" font-weight="500" fill="#64748b">Local / Edge</text>
 
-  <rect x="320" y="140" width="200" height="60" class="box"/>
-  <text x="420" y="170" class="text" text-anchor="middle">Matcher (cosine similarity vs gallery.npz)</text>
+    <!-- Card 1.1: Camera Ingestion -->
+    <g transform="translate(14, 54)">
+      <rect width="222" height="85" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#f8fafc">Video Ingestion</text>
+      <text x="14" y="44" font-size="11" fill="#94a3b8">RTSP Streams &amp; USB Webcams</text>
+      <text x="14" y="60" font-size="10.5" fill="#64748b">Multi-threaded frame grabber @ 30 FPS</text>
+      <rect x="14" y="67" width="56" height="14" rx="3" fill="#0369a1"/>
+      <text x="42" y="77" font-size="8.5" font-weight="700" fill="#f0f9ff" text-anchor="middle">CAPTURE</text>
+    </g>
 
-  <rect x="620" y="140" width="200" height="60" class="box"/>
-  <text x="720" y="170" class="text" text-anchor="middle">Recognized<br/>label + confidence</text>
+    <!-- Card 1.2: AI Pipeline -->
+    <g transform="translate(14, 150)">
+      <rect width="222" height="120" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#38bdf8">Edge Computer Vision</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">SCRFD + ArcFace (InsightFace)</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• 5-Point Landmark Face Alignment</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• ISO/IEC 19794-5 Quality Assessor</text>
+      <text x="14" y="92" font-size="10.5" fill="#94a3b8">• Multi-Spectral Anti-Spoofing (FAS)</text>
+      <text x="14" y="108" font-size="10" font-weight="500" fill="#64748b">TemporalTrackManager multi-frame fusion</text>
+    </g>
 
-  <rect x="20" y="240" width="220" height="60" class="box"/>
-  <text x="130" y="270" class="text" text-anchor="middle">Save pending crop + embedding</text>
+    <!-- Card 1.3: SQLite Ledger -->
+    <g transform="translate(14, 282)">
+      <rect width="222" height="110" rx="8" fill="url(#cardBg)" stroke="#0284c7" stroke-width="1"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#38bdf8">SQLite WAL Event Ledger</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">Offline-First Crash Recovery</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• SHA-256 Tamper-Evident Chain</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• Monotonic Sequence Numbering</text>
+      <text x="14" y="92" font-size="10.5" fill="#94a3b8">• 8-State Synchronization Worker</text>
+      <text x="14" y="104" font-size="9" font-weight="600" fill="#0284c7">Guarantees zero event loss during outages</text>
+    </g>
 
-  <rect x="320" y="240" width="220" height="60" class="box"/>
-  <text x="430" y="270" class="text" text-anchor="middle">Review CLI (review_pending.py)</text>
+    <!-- Card 1.4: Deterministic ID -->
+    <g transform="translate(14, 404)">
+      <rect width="222" height="58" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="22" font-size="11" font-weight="600" fill="#f8fafc">Deterministic Event ID</text>
+      <text x="14" y="38" font-size="10" fill="#94a3b8">SHA256(device + camera + timestamp + seq)</text>
+      <text x="14" y="50" font-size="9.5" fill="#64748b">Guarantees exactly-once cloud processing</text>
+    </g>
+  </g>
 
-  <rect x="620" y="240" width="220" height="60" class="box"/>
-  <text x="730" y="270" class="text" text-anchor="middle">Log events (detections.csv)</text>
+  <!-- ==================== COLUMN 2: JARVISLABS GPU BACKEND ==================== -->
+  <g transform="translate(340, 85)" filter="url(#shadow)">
+    <rect width="270" height="475" rx="10" fill="url(#tierBg)" stroke="#1e293b" stroke-width="1.2"/>
+    
+    <!-- Tier Header -->
+    <rect x="0" y="0" width="270" height="40" rx="10" fill="#0f172a"/>
+    <rect x="16" y="14" width="4" height="14" rx="2" fill="#818cf8"/>
+    <text x="28" y="26" font-size="13" font-weight="700" fill="#f1f5f9">Backend &amp; GPU Cloud</text>
+    <text x="195" y="25" font-size="10.5" font-weight="500" fill="#64748b">JarvisLabs</text>
 
-  <!-- Arrows -->
-  <path class="arrow" d="M180 60 L220 60" />
-  <path class="arrow" d="M380 60 L420 60" />
-  <path class="arrow" d="M580 60 L620 60" />
-  <path class="arrow" d="M700 90 L420 140" />
-  <path class="arrow" d="M720 90 L820 160" />
-  <path class="arrow" d="M420 200 L420 240" />
-  <path class="arrow" d="M200 90 L200 240" />
-  <path class="arrow" d="M540 240 L620 240" />
-  <path class="arrow" d="M740 200 L740 240" />
+    <!-- Card 2.1: GPU Service -->
+    <g transform="translate(14, 54)">
+      <rect width="242" height="96" rx="8" fill="url(#cardBg)" stroke="#4338ca" stroke-width="1"/>
+      <rect x="176" y="12" width="52" height="16" rx="4" fill="#312e81"/>
+      <text x="202" y="23" font-size="9" font-weight="700" fill="#a5b4fc" text-anchor="middle">PORT 8000</text>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#a5b4fc">GPU Detector Service</text>
+      <text x="14" y="46" font-size="11" fill="#cbd5e1">Dedicated CUDA Container</text>
+      <text x="14" y="62" font-size="10.5" fill="#94a3b8">• PyTorch / ONNX Runtime-GPU</text>
+      <text x="14" y="78" font-size="10.5" fill="#94a3b8">• InsightFace Tensor Extraction</text>
+      <text x="14" y="90" font-size="9.5" fill="#64748b">Dockerfile.detector microservice</text>
+    </g>
 
-  <!-- Labels on arrows -->
-  <text x="240" y="50" class="text">frames</text>
-  <text x="640" y="110" class="text">match</text>
-  <text x="640" y="200" class="text">no match</text>
+    <!-- Card 2.2: FastAPI Gateway -->
+    <g transform="translate(14, 162)">
+      <rect width="242" height="114" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <rect x="176" y="12" width="52" height="16" rx="4" fill="#1e293b"/>
+      <text x="202" y="23" font-size="9" font-weight="700" fill="#94a3b8" text-anchor="middle">PORT 1223</text>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#f8fafc">FastAPI REST Gateway</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">High-Throughput Async Engine</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• JWT Authentication &amp; RBAC</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• Idempotent Ingestion Deduplication</text>
+      <text x="14" y="92" font-size="10.5" fill="#94a3b8">• Cross-Camera Continuity Tracking</text>
+      <text x="14" y="106" font-size="9.5" fill="#64748b">IST Timezone (+05:30) conversions</text>
+    </g>
 
+    <!-- Card 2.3: WebSocket & MJPEG Hub -->
+    <g transform="translate(14, 288)">
+      <rect width="242" height="104" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#818cf8">Real-Time Distribution Hub</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">WebSocket Channels &amp; Video</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• /ws/alerts : Live security triggers</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• /ws/kpis : Real-time visitor counts</text>
+      <text x="14" y="92" font-size="10.5" fill="#94a3b8">• Low-Latency MJPEG Stream Broker</text>
+      <text x="14" y="102" font-size="9" fill="#64748b">Slate status overlay on camera offline</text>
+    </g>
+
+    <!-- Card 2.4: Fail-Safe Guard -->
+    <g transform="translate(14, 404)">
+      <rect width="242" height="58" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="22" font-size="11" font-weight="600" fill="#f8fafc">Production Fail-Fast Guard</text>
+      <text x="14" y="38" font-size="10" fill="#94a3b8">Prevents silent SQLite fallback</text>
+      <text x="14" y="50" font-size="9.5" fill="#64748b">Halts container on cloud database partition</text>
+    </g>
+  </g>
+
+  <!-- ==================== COLUMN 3: SUPABASE DATABASE ==================== -->
+  <g transform="translate(650, 85)" filter="url(#shadow)">
+    <rect width="240" height="475" rx="10" fill="url(#tierBg)" stroke="#1e293b" stroke-width="1.2"/>
+    
+    <!-- Tier Header -->
+    <rect x="0" y="0" width="240" height="40" rx="10" fill="#0f172a"/>
+    <rect x="16" y="14" width="4" height="14" rx="2" fill="#34d399"/>
+    <text x="28" y="26" font-size="13" font-weight="700" fill="#f1f5f9">Data Platform</text>
+    <text x="175" y="25" font-size="10.5" font-weight="500" fill="#64748b">Supabase</text>
+
+    <!-- Card 3.1: Connection Pooler -->
+    <g transform="translate(14, 54)">
+      <rect width="212" height="75" rx="8" fill="url(#cardBg)" stroke="#059669" stroke-width="1"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#34d399">Transaction Pooler</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">PostgreSQL Port 6543</text>
+      <text x="14" y="60" font-size="10" fill="#94a3b8">Bypasses connection strict limits</text>
+      <text x="14" y="70" font-size="9" fill="#64748b">Prepared statements auto-disabled</text>
+    </g>
+
+    <!-- Card 3.2: pgvector HNSW -->
+    <g transform="translate(14, 140)">
+      <rect width="212" height="114" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <rect x="145" y="12" width="54" height="16" rx="4" fill="#064e3b"/>
+      <text x="172" y="23" font-size="9" font-weight="700" fill="#a7f3d0" text-anchor="middle">&lt; 1ms HNSW</text>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#f8fafc">pgvector Engine</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">512D Vector Cosine Index</text>
+      <text x="14" y="62" font-size="10.5" fill="#94a3b8">• ix_embeddings_vector_hnsw</text>
+      <text x="14" y="78" font-size="10.5" fill="#94a3b8">• ix_detections_vector_hnsw</text>
+      <text x="14" y="94" font-size="10" fill="#94a3b8">m=16, ef_construction=64</text>
+      <text x="14" y="106" font-size="9" font-weight="600" fill="#34d399">Sub-millisecond similarity queries</text>
+    </g>
+
+    <!-- Card 3.3: Relational Schema -->
+    <g transform="translate(14, 266)">
+      <rect width="212" height="114" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#f8fafc">Relational Schema</text>
+      <text x="14" y="44" font-size="10.5" fill="#94a3b8">• profiles (Enrolled identities)</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• detections (Durable events)</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• cameras &amp; camera_configs</text>
+      <text x="14" y="92" font-size="10.5" fill="#94a3b8">• alerts &amp; transitions</text>
+      <text x="14" y="106" font-size="10" fill="#64748b">• unregistered_subjects</text>
+    </g>
+
+    <!-- Card 3.4: Event Provenance -->
+    <g transform="translate(14, 392)">
+      <rect width="212" height="70" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="22" font-size="11" font-weight="600" fill="#34d399">Provenance Lineage</text>
+      <text x="14" y="38" font-size="10" fill="#94a3b8">Audit-proof decision hashes</text>
+      <text x="14" y="52" font-size="9.5" fill="#64748b">Tracks candidate matches &amp; models</text>
+      <text x="14" y="64" font-size="9" fill="#059669">Full regulatory audit trail</text>
+    </g>
+  </g>
+
+  <!-- ==================== COLUMN 4: VERCEL FRONTEND ==================== -->
+  <g transform="translate(930, 85)" filter="url(#shadow)">
+    <rect width="260" height="475" rx="10" fill="url(#tierBg)" stroke="#1e293b" stroke-width="1.2"/>
+    
+    <!-- Tier Header -->
+    <rect x="0" y="0" width="260" height="40" rx="10" fill="#0f172a"/>
+    <rect x="16" y="14" width="4" height="14" rx="2" fill="#c084fc"/>
+    <text x="28" y="26" font-size="13" font-weight="700" fill="#f1f5f9">SOC Dashboard</text>
+    <text x="205" y="25" font-size="10.5" font-weight="500" fill="#64748b">Vercel</text>
+
+    <!-- Card 4.1: Next.js Platform -->
+    <g transform="translate(14, 54)">
+      <rect width="232" height="80" rx="8" fill="url(#cardBg)" stroke="#7c3aed" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#c084fc">Next.js 16 (Turbopack)</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">App Router Architecture</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• Tailwind CSS + Shadcn UI</text>
+      <text x="14" y="72" font-size="9.5" fill="#64748b">React Query auto-invalidation</text>
+    </g>
+
+    <!-- Card 4.2: SOC Real-Time Monitoring -->
+    <g transform="translate(14, 146)">
+      <rect width="232" height="96" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#f8fafc">Live Security Monitoring</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">Multi-Camera Grid &amp; Alerts</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• Low-Latency MJPEG Video Feeds</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• Instant Alert Cards via /ws/alerts</text>
+      <text x="14" y="90" font-size="9.5" fill="#f43f5e">One-click alert acknowledgement</text>
+    </g>
+
+    <!-- Card 4.3: Forensic & Identity -->
+    <g transform="translate(14, 254)">
+      <rect width="232" height="96" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#f8fafc">Forensic &amp; Identities</text>
+      <text x="14" y="44" font-size="11" fill="#cbd5e1">AI Image Vector Search</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• Drag-and-drop suspect photo query</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• Unregistered subject auto-cluster</text>
+      <text x="14" y="90" font-size="9.5" fill="#64748b">One-click profile register &amp; merge</text>
+    </g>
+
+    <!-- Card 4.4: Analytics Suite -->
+    <g transform="translate(14, 362)">
+      <rect width="232" height="100" rx="8" fill="url(#cardBg)" stroke="#334155" stroke-width="0.8"/>
+      <text x="14" y="24" font-size="12" font-weight="600" fill="#38bdf8">Intelligence Suite</text>
+      <text x="14" y="44" font-size="10.5" fill="#94a3b8">• 24h/7d Footfall Distribution</text>
+      <text x="14" y="60" font-size="10.5" fill="#94a3b8">• Inter-Camera Movement Graph</text>
+      <text x="14" y="76" font-size="10.5" fill="#94a3b8">• Subject Trajectory &amp; Zone History</text>
+      <text x="14" y="92" font-size="10.5" fill="#94a3b8">• Attendance &amp; Demographics</text>
+    </g>
+  </g>
+
+  <!-- ==================== FLOW CONNECTORS ==================== -->
+
+  <!-- Flow 1: Edge -> JarvisLabs (Event Sync) -->
+  <g>
+    <path d="M 298 220 L 340 220" fill="none" stroke="#38bdf8" stroke-width="2" marker-end="url(#mBlue)"/>
+    <rect x="303" y="200" width="32" height="16" rx="4" fill="#0c4a6e"/>
+    <text x="319" y="212" font-size="8.5" font-weight="700" fill="#38bdf8" text-anchor="middle">SYNC</text>
+
+    <!-- Flow: Live Video Frame Push -->
+    <path d="M 298 340 L 340 340" fill="none" stroke="#38bdf8" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#mBlue)"/>
+    <rect x="303" y="320" width="32" height="16" rx="4" fill="#0c4a6e"/>
+    <text x="319" y="332" font-size="8.5" font-weight="700" fill="#38bdf8" text-anchor="middle">MJPEG</text>
+  </g>
+
+  <!-- Flow 2: JarvisLabs -> Supabase (pgvector & SQL) -->
+  <g>
+    <path d="M 610 200 L 650 200" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#mGreen)"/>
+    <rect x="613" y="180" width="34" height="16" rx="4" fill="#064e3b"/>
+    <text x="630" y="192" font-size="8.5" font-weight="700" fill="#34d399" text-anchor="middle">:6543</text>
+
+    <path d="M 610 320 L 650 320" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#mGreen)"/>
+    <rect x="612" y="300" width="36" height="16" rx="4" fill="#064e3b"/>
+    <text x="630" y="312" font-size="8.5" font-weight="700" fill="#34d399" text-anchor="middle">HNSW</text>
+  </g>
+
+  <!-- Flow 3: JarvisLabs -> Vercel (WebSocket Events & Streaming) -->
+  <g>
+    <path d="M 610 360 C 720 360, 810 200, 930 200" fill="none" stroke="#c084fc" stroke-width="2" marker-end="url(#mPurple)"/>
+    <rect x="745" y="270" width="56" height="18" rx="4" fill="#3b0764" stroke="#7e22ce" stroke-width="0.8"/>
+    <text x="773" y="283" font-size="9" font-weight="700" fill="#f3e8ff" text-anchor="middle">WS ALERTS</text>
+
+    <path d="M 930 300 C 810 300, 720 220, 610 220" fill="none" stroke="#f43f5e" stroke-width="1.8" marker-end="url(#mRose)"/>
+    <rect x="745" y="235" width="56" height="18" rx="4" fill="#4c0519" stroke="#be123c" stroke-width="0.8"/>
+    <text x="773" y="248" font-size="9" font-weight="700" fill="#ffe4e6" text-anchor="middle">JWT REST</text>
+  </g>
+
+  <!-- ==================== CLEAN FOOTER BAR ==================== -->
+  <g transform="translate(48, 580)">
+    <rect width="1142" height="52" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Key 1 -->
+    <g transform="translate(24, 18)">
+      <circle cx="8" cy="8" r="5" fill="#38bdf8"/>
+      <text x="20" y="12" font-size="11.5" font-weight="600" fill="#f1f5f9">Offline-First Edge Sync</text>
+      <text x="160" y="12" font-size="11" fill="#64748b">SQLite WAL &amp; SHA-256 Idempotency</text>
+    </g>
+
+    <!-- Key 2 -->
+    <g transform="translate(430, 18)">
+      <circle cx="8" cy="8" r="5" fill="#818cf8"/>
+      <text x="20" y="12" font-size="11.5" font-weight="600" fill="#f1f5f9">CUDA GPU Computing</text>
+      <text x="160" y="12" font-size="11" fill="#64748b">InsightFace 12ms Inference Latency</text>
+    </g>
+
+    <!-- Key 3 -->
+    <g transform="translate(840, 18)">
+      <circle cx="8" cy="8" r="5" fill="#34d399"/>
+      <text x="20" y="12" font-size="11.5" font-weight="600" fill="#f1f5f9">pgvector HNSW Queries</text>
+      <text x="165" y="12" font-size="11" fill="#64748b">Sub-Millisecond Cosine Vector Distance</text>
+    </g>
+  </g>
 </svg>

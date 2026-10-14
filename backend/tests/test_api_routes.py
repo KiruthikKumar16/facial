@@ -50,3 +50,22 @@ def test_websocket_authorized_connection():
     token = create_access_token({"sub": "admin"})
     with client.websocket_connect(f"/ws/alerts?token={token}") as ws:
         assert ws is not None
+
+
+def test_cors_wildcard_origin():
+    """Verify that requests from Vercel wildcard domains receive valid CORS headers."""
+    response = client.options(
+        "/health",
+        headers={
+            "Origin": "https://custom-preview-branch.vercel.app",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "https://custom-preview-branch.vercel.app"
+
+
+def test_detect_endpoint_empty_payload():
+    """Verify that /detect rejects empty payload appropriately."""
+    response = client.post("/detect", files={})
+    assert response.status_code == 422  # validation error for missing required file

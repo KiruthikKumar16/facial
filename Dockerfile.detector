@@ -1,0 +1,53 @@
+# ============================================================
+# Dockerfile for Facial Recognition Detector Service
+# Supports NVIDIA GPU acceleration (JarvisLabs / Cloud VPC) and CPU
+# ============================================================
+
+FROM python:3.11-slim
+
+# Avoid prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+# Install system dependencies for OpenCV and builds
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    curl \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python requirements and CUDA runtime libraries for GPU acceleration
+COPY requirements.txt .
+
+# Install dependencies, CUDA 12 runtime, cuDNN 9, and onnxruntime-gpu
+# Avoid installing CPU onnxruntime to prevent package shadowing
+RUN pip install --no-cache-dir --upgrade pip && \
+    grep -v '^onnxruntime' requirements.txt > req_gpu.txt && \
+    pip install --no-cache-dir -r req_gpu.txt && \
+    pip install --no-cache-dir \
+        nvidia-cuda-runtime-cu12 \
+        nvidia-cudnn-cu12 \
+        nvidia-cublas-cu12 && \
+    pip install --no-cache-dir onnxruntime-gpu==1.19.2
+
+# Set library search path so ONNX Runtime GPU finds CUDA 12 and cuDNN 9
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.11/site-packages/nvidia/cublas/lib:${LD_LIBRARY_PATH}
+
+# Pre-download InsightFace buffalo_s and buffalo_l models into image layer
+# so container starts instantly without downloading on every boot
+RUN python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_s').prepare(ctx_id=-1, det_size=(320, 320))"
+
+# Copy application code
+COPY facial_recognition/ ./facial_recognition/
+COPY backend/ ./backend/
+
+# Create directory for offline ledger and logs
+RUN mkdir -p /app/data /app/pending
+
+# Default command runs the GPU detection pipeline for RTSP streams
+CMD ["python", "facial_recognition/main.py"]

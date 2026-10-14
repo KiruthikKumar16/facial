@@ -52,29 +52,39 @@ class WebSocketConnectionManager:
             await self.redis.aclose()
             
     async def _listen_to_redis(self):
-        """Background task that listens for Redis messages and relays them to local WebSockets."""
-        if not self.pubsub:
-            return
-        try:
-            async for message in self.pubsub.listen():
-                if message["type"] == "message":
-                    channel = message["channel"].decode("utf-8")
-                    data = message["data"].decode("utf-8")
-                    # Broadcast the raw JSON string payload received from Redis
-                    await self._local_broadcast_raw(channel, data)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Redis listener task crashed: {e}")
+        """Background task that listens for Redis messages and relays them to local WebSockets with auto-reconnect."""
+        while True:
+            if not self.pubsub:
+                await asyncio.sleep(5)
+                continue
+            try:
+                async for message in self.pubsub.listen():
+                    if message["type"] == "message":
+                        channel = message["channel"].decode("utf-8")
+                        data = message["data"].decode("utf-8")
+                        # Broadcast the raw JSON string payload received from Redis
+                        await self._local_broadcast_raw(channel, data)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Redis listener encountered error: {e}. Reconnecting in 3s...")
+                await asyncio.sleep(3)
+                try:
+                    if settings.redis_url:
+                        self.redis = redis.from_url(settings.redis_url)
+                        self.pubsub = self.redis.pubsub()
+                        await self.pubsub.subscribe(*self.active_connections.keys())
+                except Exception as reconnect_err:
+                    logger.error(f"Redis reconnect failed: {reconnect_err}")
 
     async def connect(self, channel: str, websocket):
         """Subscribe to a channel."""
+        await websocket.accept()
         if channel not in self.active_connections:
             self.active_connections[channel] = set()
             if self.pubsub:
                 await self.pubsub.subscribe(channel)
         self.active_connections[channel].add(websocket)
-        await websocket.accept()
         logger.info(f"Client connected to {channel}: {len(self.active_connections[channel])} subscribers")
     
     async def disconnect(self, channel: str, websocket):
@@ -103,7 +113,7 @@ class WebSocketConnectionManager:
             return
             
         disconnected = []
-        for connection in self.active_connections[channel]:
+        for connection in list(self.active_connections[channel]):
             try:
                 await connection.send_text(raw_payload)
             except Exception as e:

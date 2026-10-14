@@ -1,0 +1,79 @@
+# ============================================================
+# Docker Compose for JarvisLabs (Backend + GPU Detection + Redis)
+# Database is hosted on Supabase (Cloud PostgreSQL + pgvector)
+# Frontend is hosted on Vercel
+# ============================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: facial_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: facial_backend
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "1223:1223"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://redis:6379/0
+      PORT: 1223
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,https://*.vercel.app}
+      SECRET_KEY: ${SECRET_KEY}
+      EDGE_API_KEY: ${EDGE_API_KEY}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      DEBUG: "false"
+      ENABLE_FORENSIC_SEARCH: "true"
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:1223/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.detector
+    container_name: facial_detector
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      API_URL: http://backend:1223
+      EDGE_API_KEY: ${EDGE_API_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      USE_GPU: "true"
+      HEADLESS: "true"
+      DISABLE_WEBCAM: "true"
+      TZ: Asia/Kolkata
+    volumes:
+      - ./facial_recognition/config.yaml:/app/facial_recognition/config.yaml
+      - ./facial_recognition/known_faces:/app/facial_recognition/known_faces
+      - ./data:/app/data
+      - ./pending:/app/pending
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

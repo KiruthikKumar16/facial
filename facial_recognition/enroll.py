@@ -63,10 +63,18 @@ def load_yaml_config(path: Path) -> Dict[str, Any]:
 
 
 if __name__ == '__main__':
-    config_path = Path(__file__).resolve().parent / 'config.yaml'
+    base_dir = Path(__file__).resolve().parent
+    config_path = base_dir / 'config.yaml'
     config: Dict[str, Any] = load_yaml_config(config_path)
+    
     known_faces_dir = Path(config.get('known_faces_dir', 'known_faces'))
+    if not known_faces_dir.is_absolute():
+        known_faces_dir = base_dir / known_faces_dir
+        
     gallery_path = Path(config.get('gallery_path', 'known_faces/gallery.npz'))
+    if not gallery_path.is_absolute():
+        gallery_path = base_dir / gallery_path
+        
     use_gpu = bool(config.get('use_gpu', False))
     inference_width = int(config.get('inference_frame_width', 640))
     inference_height = int(config.get('inference_frame_height', 640))

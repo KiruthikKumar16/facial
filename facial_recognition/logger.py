@@ -171,6 +171,7 @@ class DetectionLogger:
         version_bundle: Optional[Any] = None,
         provenance: Optional[Any] = None,
         liveness_score: Optional[float] = None,
+        thumbnail: Optional[str] = None,
     ) -> Optional[str]:
         """
         Log a detection event (main entry point).
@@ -190,6 +191,7 @@ class DetectionLogger:
             config_version: Active camera configuration version
             version_bundle: ModelConfigVersionBundle snapshot
             provenance: RecognitionProvenance or lineage dictionary
+            thumbnail: Optional base64 JPEG thumbnail of face crop
 
         Returns:
             event_id: Unique event identifier, or None if deduplicated
@@ -216,6 +218,7 @@ class DetectionLogger:
             "provenance": prov_dict,
             "version_bundle": bundle_dict,
             "embedding": embedding.tolist() if hasattr(embedding, "tolist") else embedding,
+            "thumbnail": thumbnail,
         }
 
         is_unknown = not identity or identity.strip().lower() in ["unknown", "unregistered"] or identity.startswith("Person ")
@@ -417,6 +420,8 @@ class DetectionLogger:
                 }
                 if payload.get("embedding") is not None:
                     api_payload["embedding"] = payload["embedding"]
+                if payload.get("thumbnail") is not None:
+                    api_payload["thumbnail"] = payload["thumbnail"]
                 
                 if event.get('age') is not None:
                     api_payload["age"] = int(event['age'])

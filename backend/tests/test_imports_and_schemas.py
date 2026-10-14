@@ -234,5 +234,34 @@ def test_face_anti_spoofing_liveness():
     assert score_flat < score_natural
 
 
+def test_config_parsers():
+    """Verify robust parsing in backend config."""
+    from config import _parse_int, _parse_float, _parse_bool
+
+    assert _parse_int("1223", 8000) == 1223
+    assert _parse_int("", 8000) == 8000
+    assert _parse_int("invalid", 8000) == 8000
+
+    assert _parse_float("0.75", 0.5) == 0.75
+    assert _parse_float("", 0.5) == 0.5
+    assert _parse_float("invalid", 0.5) == 0.5
+
+    assert _parse_bool("true") is True
+    assert _parse_bool("1") is True
+    assert _parse_bool("false") is False
+    assert _parse_bool("") is False
 
 
+def test_camera_placeholder():
+    """Verify camera placeholder returns valid non-empty JPEG bytes."""
+    from main import _make_camera_placeholder
+    import cv2
+    import numpy as np
+
+    buf = _make_camera_placeholder("Test Camera Offline")
+    assert isinstance(buf, bytes)
+    assert len(buf) > 100
+    arr = np.frombuffer(buf, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    assert img is not None
+    assert img.shape == (240, 320, 3)

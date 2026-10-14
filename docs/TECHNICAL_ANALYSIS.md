@@ -60,7 +60,7 @@ The system is a **distributed Edge-to-Cloud facial recognition platform** with t
 | **Backend** | FastAPI, SQLAlchemy, Python 3.11, Uvicorn | REST API, WebSocket hub, vector queries |
 | **Database** | PostgreSQL (Supabase) + pgvector | Relational + vector storage |
 | **Frontend** | Next.js 14, React 18, @tanstack/react-query, TailwindCSS | Real-time dashboard |
-| **Deployment** | Render (Backend), Vercel (Frontend), Supabase (Database) | Cloud infrastructure |
+| **Deployment** | JarvisLabs (Backend & GPU Detector), Vercel (Frontend), Supabase (Database) | Cloud infrastructure |
 
 ---
 

@@ -58,6 +58,7 @@ export interface FaceLog {
   wearingGlasses: boolean
   /** Colour token used to render the synthetic face-crop swatch. */
   snapshotTone: string
+  faceImage?: string | null
 }
 
 export interface Alert {
@@ -86,6 +87,7 @@ export interface UnknownCapture {
   age: number
   gender: Gender
   snapshotTone: string
+  faceImage?: string | null
 }
 
 export interface UnregisteredSubject {
@@ -100,6 +102,7 @@ export interface UnregisteredSubject {
   vectorDimension: number
   eventIds: string[]
   status: string
+  thumbnail?: string | null
 }
 
 export interface Profile {

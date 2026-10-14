@@ -15,16 +15,16 @@ This repository contains a full-stack, enterprise-grade Facial Recognition, Secu
 - **Dual-Write Logging**: Designed to run continuously on a local machine (`run.ps1` or `run_cpu.ps1`), writing detections simultaneously to a local `detections.csv` archive and instantly over the network to the PostgreSQL database.
 - **Resilience**: Features robust fallback mechanisms if the database drops connection, ensuring no frames or events are lost.
 
-### 2. Backend API (Cloud - Render)
-- **Tech Stack**: FastAPI, SQLAlchemy, Uvicorn, PostgreSQL with `pgvector`.
+### 2. Backend & GPU Detection (Cloud - JarvisLabs)
+- **Tech Stack**: FastAPI, SQLAlchemy, Uvicorn, PostgreSQL with `pgvector`, CUDA/PyTorch, InsightFace.
 - **Database Models**: 
-  - `cameras`, `profiles`, `embeddings`, `detections`, `alerts`, `model_thresholds`.
-- **AI Integration**: Imports the `InsightFaceDetector` directly from the `facial_recognition` module. By injecting this logic into the FastAPI `lifespan`, the backend natively processes manual uploads for Forensic Search and Profile Enrollments without spinning up external microservices.
-- **Vector Search**: Leverages `pgvector` Cosine Distance (`<=>`) to execute ultra-fast face similarity searches directly inside the SQL engine.
+  - `cameras`, `profiles`, `embeddings`, `detections`, `alerts`, `model_thresholds`, `camera_transitions`, `event_provenance`.
+- **AI Integration**: Hardware-accelerated `InsightFaceDetector` runs on dedicated NVIDIA GPU instances (`docker-compose.jarvislabs.yml`). Native forensic search and edge frame processing with sub-millisecond latencies.
+- **Vector Search**: Leverages `pgvector` Cosine Distance (`<=>`) with HNSW index acceleration to execute ultra-fast face similarity searches directly inside the database engine.
 - **Real-Time Data**: Exposes `/ws/alerts`, `/ws/cameras`, and `/ws/kpis` WebSocket channels to push live telemetry.
 
 ### 3. Frontend Dashboard (Cloud - Vercel)
-- **Tech Stack**: Next.js 14, React 18, TailwindCSS, Lucide Icons, `@tanstack/react-query`.
+- **Tech Stack**: Next.js, React, TailwindCSS, Lucide Icons, `@tanstack/react-query`.
 - **Tabs**:
   1. **Alerts**: Real-time event log and alert management.
   2. **Forensic Search**: Upload a photo to search the database for matches against historic detections.
@@ -40,18 +40,17 @@ This repository contains a full-stack, enterprise-grade Facial Recognition, Secu
 The application is fully configured for a distributed cloud architecture:
 
 ### 1. Database (Supabase)
-- Hosts the PostgreSQL instance with the `pgvector` extension enabled.
-- Stores all detection events, alert configurations, and the 512-dim embedding arrays.
+- Hosts the PostgreSQL instance with the `pgvector` extension and HNSW indexing enabled.
+- Stores all detection events, alert configurations, and 512-dim embedding vectors.
 
-### 2. Backend (Render)
-- Deployed as a Python Web Service.
-- Reads `DATABASE_URL` from the environment to connect to Supabase.
-- The `requirements.txt` specifically includes `opencv-python-headless`, `onnxruntime`, and `insightface` to allow Render's headless Linux environment to run the AI embedding models natively on the backend.
+### 2. Backend & GPU Detector (JarvisLabs)
+- Deployed as Docker containers (`backend` + `gpu-detector`) on an NVIDIA GPU VM.
+- Reads `DATABASE_URL` with transaction mode pooler on port 6543 to connect to Supabase.
 - Applies Security Middleware (HSTS, `X-Content-Type-Options`) and strict CORS configurations (`CORS_ORIGINS`).
 
 ### 3. Frontend (Vercel)
-- Deployed as a standard Next.js application.
-- Configured with `NEXT_PUBLIC_API_URL` pointing to the Render backend and `NEXT_PUBLIC_WS_URL` for the WebSocket connections.
+- Deployed as a Next.js application.
+- Configured with `NEXT_PUBLIC_API_URL` pointing to the JarvisLabs backend and `NEXT_PUBLIC_WS_URL` for real-time WebSocket connections.
 
 ---
 

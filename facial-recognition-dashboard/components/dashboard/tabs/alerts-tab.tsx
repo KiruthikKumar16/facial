@@ -28,7 +28,7 @@ import {
   SectionHeading,
   StatusBadge,
 } from '@/components/dashboard/shared'
-import { formatTime, statusLabel } from '@/lib/format'
+import { formatTime, formatDateTime, statusLabel } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { Alert, DetectionStatus } from '@/lib/types'
 import {
@@ -99,7 +99,7 @@ function AlertCard({
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground">
             <span>{alert.cameraId}</span>
-            <span>{formatTime(alert.timestamp)}</span>
+            <span>{formatTime(alert.timestamp)} IST</span>
             <span className="text-foreground">{alert.confidence.toFixed(1)}%</span>
           </div>
         </div>
@@ -440,7 +440,7 @@ function LogTable() {
               <TableHead>Event ID</TableHead>
               <TableHead>Subject</TableHead>
               <TableHead>Camera</TableHead>
-              <TableHead>Time</TableHead>
+              <TableHead>Time (IST)</TableHead>
               <TableHead>Confidence</TableHead>
               <TableHead>Liveness</TableHead>
               <TableHead>Status</TableHead>
@@ -461,18 +461,21 @@ function LogTable() {
                   {l.id}
                 </TableCell>
                 <TableCell>
-                  <span className="text-sm">
-                    {l.profileName ?? (
-                      <span className="text-muted-foreground">Unidentified</span>
-                    )}
-                  </span>
+                  <div className="flex items-center gap-2.5">
+                    <FaceTile tone={l.snapshotTone} image={l.faceImage} size="sm" />
+                    <span className="text-sm">
+                      {l.profileName ?? (
+                        <span className="text-muted-foreground">Unidentified</span>
+                      )}
+                    </span>
+                  </div>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   <span className="font-mono text-xs">{l.cameraId}</span>{' '}
                   {l.cameraName}
                 </TableCell>
-                <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
-                  {formatTime(l.timestamp)}
+                <TableCell className="font-mono text-xs tabular-nums text-muted-foreground" title={formatDateTime(l.timestamp)}>
+                  {formatTime(l.timestamp)} <span className="text-[10px] text-muted-foreground/60 font-sans">IST</span>
                 </TableCell>
                 <TableCell>
                   <ConfidenceMeter value={l.confidence} />

@@ -1,30 +1,20 @@
-import { useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { fetchCameras, fetchThresholds, saveThresholds, fetchNodeHealth } from '@/lib/api'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { fetchCameras, fetchNodeHealth } from '@/lib/api'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Slider } from '@/components/ui/slider'
-import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { SectionHeading } from '@/components/dashboard/shared'
 import { CameraConfigDialog } from '@/components/dashboard/camera-config-dialog'
 import { cn } from '@/lib/utils'
 import { formatTime } from '@/lib/format'
-import type { Camera, CameraStatus, ModelThresholds, NodeHealthReport } from '@/lib/types'
+import type { Camera, CameraStatus } from '@/lib/types'
 import {
   Cctv,
-  Cpu,
-  Gauge,
-  ServerCog,
-  ShieldCheck,
-  SlidersHorizontal,
   Sliders,
-  Wifi,
   WifiOff,
   Activity,
   HardDrive,
-  Layers,
-  Zap,
 } from 'lucide-react'
 
 const statusMeta: Record<

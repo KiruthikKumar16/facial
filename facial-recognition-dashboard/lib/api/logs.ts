@@ -144,11 +144,14 @@ export const mergeUnregisteredSubjects = async (id: string, sourceId: string): P
   await handleResponse<any>(response)
 }
 
-export const registerUnregisteredSubject = async (id: string, { name, role }: { name: string; role: ProfileRole }): Promise<void> => {
+export const registerUnregisteredSubject = async (
+  id: string,
+  { name, role, department }: { name: string; role: ProfileRole; department?: string },
+): Promise<void> => {
   const response = await authFetch(`/api/unregistered-subjects/${encodeURIComponent(id)}/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, role }),
+    body: JSON.stringify({ name, role, department }),
   })
   await handleResponse<unknown>(response)
 }

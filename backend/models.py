@@ -194,6 +194,7 @@ class Detection(Base):
     wearing_mask = Column(Boolean, default=False)
     wearing_glasses = Column(Boolean, default=False)
     bbox = Column(String)  # JSON serialized [x1, y1, x2, y2]
+    face_image = Column(Text, nullable=True)  # Base64 encoded JPEG face crop thumbnail
     priority = Column(SQLEnum(EventPriority), default=EventPriority.normal, index=True)
     config_version = Column(Integer, nullable=True, default=1, index=True)
     
@@ -223,6 +224,7 @@ class UnregisteredSubject(Base):
     display_name = Column(String, nullable=False)
     representative_embedding = Column(Vector(512), nullable=False)
     similarity_threshold = Column(Float, nullable=False, default=0.35)
+    thumbnail = Column(Text, nullable=True)  # Base64 encoded JPEG face crop thumbnail
     status = Column(String, nullable=False, default="active")
     created_at = Column(DateTime, default=ist_now)
     updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)

@@ -24,7 +24,7 @@ import {
 } from '@/components/dashboard/shared'
 import { formatTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { EmbeddingStatus, Profile, ProfileRole } from '@/lib/types'
+import type { EmbeddingStatus, Profile, ProfileRole, UnregisteredSubject } from '@/lib/types'
 import {
   CircleCheck,
   CircleDashed,
@@ -163,7 +163,7 @@ function ProfileCard({ profile, onSave, onClearVectors, onDelete }: { profile: P
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Last seen</span>
             <span className="font-mono">
-              {profile.lastSeen ? formatTime(profile.lastSeen) : '—'}
+              {profile.lastSeen ? `${formatTime(profile.lastSeen)} IST` : '—'}
             </span>
           </div>
           <div className="flex items-center justify-between text-xs">
@@ -331,12 +331,61 @@ function UnregisteredVectorsPanel({ profiles }: { profiles: Profile[] }) {
     queryFn: fetchUnregisteredSubjects,
   })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['unregistered-vectors'] })
-  const renameMutation = useMutation({ mutationFn: ({ id, name }: { id: string; name: string }) => renameUnregisteredSubject(id, name), onSuccess: refresh })
-  const registerMutation = useMutation({ mutationFn: ({ id, name, role }: { id: string; name: string; role: ProfileRole }) => registerUnregisteredSubject(id, { name, role }), onSuccess: () => { refresh(); queryClient.invalidateQueries({ queryKey: ['profiles'] }) } })
-  const assignMutation = useMutation({ mutationFn: ({ id, profileId }: { id: string; profileId: string }) => assignUnregisteredSubject(id, profileId), onSuccess: () => { refresh(); queryClient.invalidateQueries({ queryKey: ['profiles'] }) } })
-  const mergeMutation = useMutation({ mutationFn: ({ id, sourceId }: { id: string; sourceId: string }) => mergeUnregisteredSubjects(id, sourceId), onSuccess: refresh })
-  const deleteEventMutation = useMutation({ mutationFn: ({ subjectId, eventId }: { subjectId: string; eventId: string }) => deleteUnregisteredEvent(subjectId, eventId), onSuccess: refresh })
-  const deleteSubjectMutation = useMutation({ mutationFn: deleteUnregisteredSubject, onSuccess: refresh })
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => renameUnregisteredSubject(id, name),
+    onSuccess: refresh,
+    onError: (err: any) => alert(`Failed to rename subject: ${err?.message || 'Unknown error'}`),
+  })
+  const registerMutation = useMutation({
+    mutationFn: ({ id, name, role, department }: { id: string; name: string; role: ProfileRole; department?: string }) =>
+      registerUnregisteredSubject(id, { name, role, department }),
+    onSuccess: () => {
+      refresh()
+      queryClient.invalidateQueries({ queryKey: ['profiles'] })
+      setSelectedSubject(null)
+    },
+    onError: (err: any) => alert(`Failed to register profile: ${err?.message || 'Unknown error'}`),
+  })
+  const assignMutation = useMutation({
+    mutationFn: ({ id, profileId }: { id: string; profileId: string }) => assignUnregisteredSubject(id, profileId),
+    onSuccess: () => {
+      refresh()
+      queryClient.invalidateQueries({ queryKey: ['profiles'] })
+      setSelectedSubject(null)
+    },
+    onError: (err: any) => alert(`Failed to assign to profile: ${err?.message || 'Unknown error'}`),
+  })
+  const mergeMutation = useMutation({
+    mutationFn: ({ id, sourceId }: { id: string; sourceId: string }) => mergeUnregisteredSubjects(id, sourceId),
+    onSuccess: refresh,
+    onError: (err: any) => alert(`Failed to merge subjects: ${err?.message || 'Unknown error'}`),
+  })
+  const deleteEventMutation = useMutation({
+    mutationFn: ({ subjectId, eventId }: { subjectId: string; eventId: string }) => deleteUnregisteredEvent(subjectId, eventId),
+    onSuccess: refresh,
+    onError: (err: any) => alert(`Failed to delete event: ${err?.message || 'Unknown error'}`),
+  })
+  const deleteSubjectMutation = useMutation({
+    mutationFn: deleteUnregisteredSubject,
+    onSuccess: refresh,
+    onError: (err: any) => alert(`Failed to delete subject: ${err?.message || 'Unknown error'}`),
+  })
+
+  const [selectedSubject, setSelectedSubject] = useState<UnregisteredSubject | null>(null)
+  const [modalMode, setModalMode] = useState<'register' | 'assign'>('register')
+  const [regName, setRegName] = useState('')
+  const [regRole, setRegRole] = useState<ProfileRole>('visitor')
+  const [regDept, setRegDept] = useState('')
+  const [assignProfileId, setAssignProfileId] = useState('')
+
+  const openActionModal = (subject: UnregisteredSubject, mode: 'register' | 'assign' = 'register') => {
+    setSelectedSubject(subject)
+    setModalMode(mode)
+    setRegName(subject.displayName.startsWith('Unknown') ? '' : subject.displayName)
+    setRegRole('visitor')
+    setRegDept('')
+    setAssignProfileId(profiles[0]?.id || '')
+  }
 
   return (
     <Card className="gap-0 py-0">
@@ -345,7 +394,7 @@ function UnregisteredVectorsPanel({ profiles }: { profiles: Profile[] }) {
           icon={ScanFace}
           title="Unregistered Vectors"
           count={subjects.length}
-          description="Similarity-grouped unknown captures awaiting identity assignment"
+          description="Visual face captures awaiting identity registration or profile assignment"
         />
       </CardHeader>
       <CardContent className="p-4">
@@ -359,35 +408,284 @@ function UnregisteredVectorsPanel({ profiles }: { profiles: Profile[] }) {
         ) : (
           <div className="space-y-3">
             {subjects.map((subject) => (
-              <div key={subject.id} className="rounded-lg border border-border bg-card/50 p-3">
+              <div key={subject.id} className="rounded-lg border border-border bg-card/50 p-3 hover:border-border/80 transition-colors">
                 <div className="flex items-start gap-3">
-                  <FaceTile tone="rose" size="md" flagged />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">{subject.displayName}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{subject.captureCount} captures · {subject.cameras.join(', ')}</p>
-                    <p className="font-mono text-[11px] text-muted-foreground">{formatTime(subject.firstSeen)} - {formatTime(subject.lastSeen)} · best {(subject.bestConfidence * 100).toFixed(1)}%</p>
-                    <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">Vector {subject.vectorDimension}D · SHA-256 {subject.representativeFingerprint.slice(0, 16)}...</p>
+                  <div
+                    className="cursor-pointer group relative"
+                    title="Click to view & register"
+                    onClick={() => openActionModal(subject, 'register')}
+                  >
+                    <FaceTile
+                      image={subject.thumbnail}
+                      tone="rose"
+                      size="lg"
+                      flagged
+                      className="size-20 shadow-sm transition-transform duration-200 group-hover:scale-105"
+                    />
+                    <span className="absolute inset-0 flex items-center justify-center rounded-md bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold text-white">
+                      Inspect
+                    </span>
                   </div>
-                  <Button size="icon" variant="ghost" title="Delete subject group" aria-label={`Delete ${subject.displayName}`} className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => { if (window.confirm(`Delete ${subject.displayName} and all ${subject.captureCount} events?`)) deleteSubjectMutation.mutate(subject.id) }}><Trash2 className="size-3.5" /></Button>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold">{subject.displayName}</p>
+                      {subject.thumbnail ? (
+                        <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                          Photo Captured
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                          Vector Only
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {subject.captureCount} sightings · {subject.cameras.join(', ') || 'Camera 0'}
+                    </p>
+                    <p className="font-mono text-[11px] text-muted-foreground">
+                      {formatTime(subject.firstSeen)} - {formatTime(subject.lastSeen)} IST · best {(subject.bestConfidence * 100).toFixed(1)}%
+                    </p>
+                    <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground/80">
+                      Vector {subject.vectorDimension}D · SHA-256 {subject.representativeFingerprint.slice(0, 16)}...
+                    </p>
+                  </div>
+
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    title="Delete subject group"
+                    aria-label={`Delete ${subject.displayName}`}
+                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => {
+                      if (window.confirm(`Delete ${subject.displayName} and all ${subject.captureCount} events?`)) {
+                        deleteSubjectMutation.mutate(subject.id)
+                      }
+                    }}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
                 </div>
-                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  <Button size="xs" variant="outline" onClick={() => { const name = window.prompt('Name for this subject', subject.displayName); if (name?.trim()) renameMutation.mutate({ id: subject.id, name }) }}><Pencil /> Rename</Button>
-                  <Button size="xs" onClick={() => { const name = window.prompt('Register as new profile', subject.displayName); if (name?.trim()) registerMutation.mutate({ id: subject.id, name, role: 'visitor' }) }}><UserRoundPlus /> Register</Button>
-                  <select aria-label={`Assign ${subject.displayName} to profile`} className="h-6 min-w-0 rounded-md border border-border bg-background px-2 text-xs" defaultValue="" onChange={(event) => { if (event.target.value) assignMutation.mutate({ id: subject.id, profileId: event.target.value }); event.target.value = '' }}>
-                    <option value="">Assign to profile...</option>
-                    {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-                  </select>
-                  <select aria-label={`Merge ${subject.displayName}`} className="h-6 min-w-0 rounded-md border border-border bg-background px-2 text-xs" defaultValue="" onChange={(event) => { if (event.target.value) mergeMutation.mutate({ id: subject.id, sourceId: event.target.value }); event.target.value = '' }}>
-                    <option value="">Merge another group...</option>
-                    {subjects.filter((candidate) => candidate.id !== subject.id).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>)}
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button size="xs" onClick={() => openActionModal(subject, 'register')}>
+                    <UserRoundPlus className="size-3.5 mr-1" /> Register Profile
+                  </Button>
+                  <Button size="xs" variant="outline" onClick={() => openActionModal(subject, 'assign')}>
+                    <UsersRound className="size-3.5 mr-1" /> Assign to Existing
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => {
+                      const name = window.prompt('Rename subject', subject.displayName)
+                      if (name?.trim()) renameMutation.mutate({ id: subject.id, name })
+                    }}
+                  >
+                    <Pencil className="size-3 mr-1" /> Rename
+                  </Button>
+
+                  <select
+                    aria-label={`Merge ${subject.displayName}`}
+                    className="h-6 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground hover:text-foreground"
+                    defaultValue=""
+                    onChange={(event) => {
+                      if (event.target.value) {
+                        mergeMutation.mutate({ id: subject.id, sourceId: event.target.value })
+                        event.target.value = ''
+                      }
+                    }}
+                  >
+                    <option value="">Merge into group...</option>
+                    {subjects
+                      .filter((candidate) => candidate.id !== subject.id)
+                      .map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.displayName}
+                        </option>
+                      ))}
                   </select>
                 </div>
+
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {subject.eventIds.slice(0, 8).map((eventId) => <Button key={eventId} size="xs" variant="ghost" title={`Delete event ${eventId}`} className="font-mono text-[10px] text-muted-foreground hover:text-destructive" onClick={() => { if (window.confirm('Delete this event?')) deleteEventMutation.mutate({ subjectId: subject.id, eventId }) }}>{eventId.slice(0, 8)} <Trash2 /></Button>)}
+                  {subject.eventIds.slice(0, 8).map((eventId) => (
+                    <Button
+                      key={eventId}
+                      size="xs"
+                      variant="ghost"
+                      title={`Delete event ${eventId}`}
+                      className="font-mono text-[10px] text-muted-foreground hover:text-destructive"
+                      onClick={() => {
+                        if (window.confirm('Delete this event?')) {
+                          deleteEventMutation.mutate({ subjectId: subject.id, eventId })
+                        }
+                      }}
+                    >
+                      {eventId.slice(0, 8)} <Trash2 className="size-2.5 ml-1" />
+                    </Button>
+                  ))}
                 </div>
               </div>
             ))}
           </div>
+        )}
+
+        {selectedSubject && (
+          <Dialog open={!!selectedSubject} onOpenChange={(open) => !open && setSelectedSubject(null)}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-base">
+                  <ScanFace className="size-5 text-rose-500" />
+                  {modalMode === 'register' ? 'Register New Profile' : 'Assign to Existing Profile'}
+                </DialogTitle>
+                <DialogDescription>
+                  Review the captured biometric photo and assign an identity without using CLI.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="my-2 grid grid-cols-1 items-center gap-4 sm:grid-cols-[130px_1fr] rounded-lg border border-border bg-muted/30 p-3">
+                <div className="flex flex-col items-center gap-1.5">
+                  <FaceTile
+                    image={selectedSubject.thumbnail}
+                    tone="rose"
+                    size="lg"
+                    flagged
+                    className="size-24 rounded-lg shadow-md ring-2 ring-primary/40"
+                  />
+                  <Badge variant="outline" className="text-[10px] font-mono">
+                    {(selectedSubject.bestConfidence * 100).toFixed(1)}% confidence
+                  </Badge>
+                </div>
+
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  <p className="font-semibold text-sm text-foreground">{selectedSubject.displayName}</p>
+                  <p><span className="font-medium text-foreground">Captures:</span> {selectedSubject.captureCount} sightings</p>
+                  <p><span className="font-medium text-foreground">Cameras:</span> {selectedSubject.cameras.join(', ') || 'Camera 0'}</p>
+                  <p><span className="font-medium text-foreground">Time Recorded:</span> {formatTime(selectedSubject.firstSeen)} - {formatTime(selectedSubject.lastSeen)} IST</p>
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      size="xs"
+                      type="button"
+                      variant={modalMode === 'register' ? 'default' : 'outline'}
+                      onClick={() => setModalMode('register')}
+                    >
+                      Register New Profile
+                    </Button>
+                    <Button
+                      size="xs"
+                      type="button"
+                      variant={modalMode === 'assign' ? 'default' : 'outline'}
+                      onClick={() => setModalMode('assign')}
+                    >
+                      Assign to Profile
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {modalMode === 'register' ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (!regName.trim()) return
+                    registerMutation.mutate({
+                      id: selectedSubject.id,
+                      name: regName.trim(),
+                      role: regRole,
+                      department: regDept.trim() || undefined,
+                    })
+                  }}
+                  className="space-y-3"
+                >
+                  <div className="space-y-1">
+                    <Label htmlFor="reg-name" className="text-xs">Full Name *</Label>
+                    <Input
+                      id="reg-name"
+                      required
+                      autoFocus
+                      placeholder="e.g. Alice Smith"
+                      value={regName}
+                      onChange={(e) => setRegName(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label htmlFor="reg-role" className="text-xs">Role</Label>
+                      <select
+                        id="reg-role"
+                        value={regRole}
+                        onChange={(e) => setRegRole(e.target.value as ProfileRole)}
+                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+                      >
+                        <option value="visitor">Visitor</option>
+                        <option value="employee">Employee</option>
+                        <option value="vip">VIP</option>
+                        <option value="blacklist">Blacklist</option>
+                        <option value="watchlist">Watchlist</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="reg-dept" className="text-xs">Department (Optional)</Label>
+                      <Input
+                        id="reg-dept"
+                        placeholder="e.g. Engineering"
+                        value={regDept}
+                        onChange={(e) => setRegDept(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <DialogFooter className="mt-4 gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={() => setSelectedSubject(null)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" size="sm" disabled={!regName.trim() || registerMutation.isPending}>
+                      {registerMutation.isPending ? 'Enrolling...' : 'Confirm & Register Profile'}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              ) : (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="assign-profile" className="text-xs">Select Target Profile</Label>
+                    <select
+                      id="assign-profile"
+                      value={assignProfileId}
+                      onChange={(e) => setAssignProfileId(e.target.value)}
+                      className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+                    >
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.role}{p.department ? ` · ${p.department}` : ''})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <DialogFooter className="mt-4 gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={() => setSelectedSubject(null)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={!assignProfileId || assignMutation.isPending}
+                      onClick={() => {
+                        if (assignProfileId) {
+                          assignMutation.mutate({ id: selectedSubject.id, profileId: assignProfileId })
+                        }
+                      }}
+                    >
+                      {assignMutation.isPending ? 'Assigning...' : 'Assign to Profile'}
+                    </Button>
+                  </DialogFooter>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
         )}
       </CardContent>
     </Card>

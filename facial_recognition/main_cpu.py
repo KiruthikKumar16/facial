@@ -75,6 +75,28 @@ TIERS = {
 }
 
 
+def _make_crop_thumbnail(frame: Any, bbox: Any, max_size: int = 160, quality: int = 80) -> Optional[str]:
+    """Extract a face crop and encode as a compact base64 JPEG thumbnail."""
+    try:
+        import base64
+        import cv2
+        l, t, r, b = [int(v) for v in bbox]
+        fh, fw = frame.shape[:2]
+        crop = frame[max(0, t):min(fh, b), max(0, l):min(fw, r)]
+        if crop.size == 0:
+            return None
+        hc, wc = crop.shape[:2]
+        if max(hc, wc) > max_size:
+            scale = max_size / float(max(hc, wc))
+            crop = cv2.resize(crop, (max(1, int(wc * scale)), max(1, int(hc * scale))), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if ok:
+            return base64.b64encode(buf).decode('ascii')
+    except Exception:
+        pass
+    return None
+
+
 class CpuCameraPipeline:
     def __init__(
         self,
@@ -404,6 +426,7 @@ class CpuCameraPipeline:
                 if is_finalized:
                     label = f"[{track_id}] {fused_id}*"
                     if self.logger is not None and not getattr(track, 'has_been_logged', False):
+                        thumb = _make_crop_thumbnail(frame, full_bbox)
                         self.logger.log_detection(
                             self.camera_id, 
                             full_bbox, 
@@ -415,6 +438,7 @@ class CpuCameraPipeline:
                             embedding=obs.embedding,
                             config_version=cfg_ver,
                             liveness_score=obs.liveness_score,
+                            thumbnail=thumb,
                         )
                         track.has_been_logged = True
                 elif track.valid_embeddings_count >= self.track_manager.min_obs and not getattr(track, 'has_been_saved', False):
@@ -430,6 +454,7 @@ class CpuCameraPipeline:
                                 track.fused_identity = saved_label
 
                     if self.logger is not None and not getattr(track, 'has_been_logged', False):
+                        thumb = _make_crop_thumbnail(frame, full_bbox)
                         self.logger.log_detection(
                             self.camera_id, 
                             full_bbox, 
@@ -440,6 +465,7 @@ class CpuCameraPipeline:
                             quality_score=obs.quality_score,
                             embedding=obs.embedding,
                             config_version=cfg_ver,
+                            thumbnail=thumb,
                         )
                         track.has_been_logged = True
                     track.has_been_saved = True
@@ -532,19 +558,27 @@ def load_config(path: Path) -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def build_sources(cfg: Dict[str, Any], webcam_index: Optional[int] = None) -> List[Tuple[str, Any]]:
+def build_sources(cfg: Dict[str, Any], webcam_index: Optional[int] = None, webcam_only: bool = False) -> List[Tuple[str, Any]]:
     sources: List[Tuple[str, Any]] = []
-    sources.append(('webcam', int(webcam_index if webcam_index is not None else cfg.get('webcam_index', 0))))
-    for idx, url in enumerate(cfg.get('rtsp_urls', []) or []):
-        sources.append((f'rtsp-{idx+1}', str(url)))
-    dvr_ip = os.environ.get('DVR_IP', '').strip()
-    dvr_username = os.environ.get('DVR_USERNAME', '').strip()
-    dvr_password = os.environ.get('DVR_PASSWORD', '')
-    if dvr_ip and dvr_username and dvr_password:
-        dvr_port = os.environ.get('DVR_RTSP_PORT', '554').strip()
-        dvr_path = os.environ.get('DVR_RTSP_PATH', 'Streaming/Channels/101').strip().lstrip('/')
-        source = f'rtsp://{quote(dvr_username, safe="")}:{quote(dvr_password, safe="")}@{dvr_ip}:{dvr_port}/{dvr_path}'
-        sources.append(('dvr-1', source))
+    effective_index = webcam_index if webcam_index is not None else cfg.get('webcam_index', 0)
+    disable_webcam = (
+        os.environ.get("DISABLE_WEBCAM", "").strip().lower() in ("true", "1", "yes")
+        or os.environ.get("NO_WEBCAM", "").strip().lower() in ("true", "1", "yes")
+        or int(effective_index) < 0
+    )
+    if not disable_webcam:
+        sources.append(('webcam', int(effective_index)))
+    if not webcam_only:
+        for idx, url in enumerate(cfg.get('rtsp_urls', []) or []):
+            sources.append((f'rtsp-{idx+1}', str(url)))
+        dvr_ip = os.environ.get('DVR_IP', '').strip()
+        dvr_username = os.environ.get('DVR_USERNAME', '').strip()
+        dvr_password = os.environ.get('DVR_PASSWORD', '')
+        if dvr_ip and dvr_username and dvr_password:
+            dvr_port = os.environ.get('DVR_RTSP_PORT', '554').strip()
+            dvr_path = os.environ.get('DVR_RTSP_PATH', 'Streaming/Channels/101').strip().lstrip('/')
+            source = f'rtsp://{quote(dvr_username, safe="")}:{quote(dvr_password, safe="")}@{dvr_ip}:{dvr_port}/{dvr_path}'
+            sources.append(('dvr-1', source))
     return sources
 
 
@@ -638,7 +672,7 @@ def main():
     from facial_recognition.quality import FaceQualityAssessor
     quality_assessor = FaceQualityAssessor(cfg.get('quality_thresholds', {}))
 
-    for cam_id, src in build_sources(cfg, options.webcam_index):
+    for cam_id, src in build_sources(cfg, options.webcam_index, options.webcam_only):
         p = CpuCameraPipeline(
             cam_id,
             src,
@@ -670,8 +704,19 @@ def main():
     signal.signal(signal.SIGINT, handle)
     signal.signal(signal.SIGTERM, handle)
 
-    for p in pipelines:
-        cv2.namedWindow(p.camera_id, cv2.WINDOW_NORMAL)
+    headless = (
+        os.environ.get("HEADLESS", "").strip().lower() in ("true", "1", "yes")
+        or not bool(os.environ.get("DISPLAY"))
+    )
+
+    if not headless:
+        for p in pipelines:
+            try:
+                cv2.namedWindow(p.camera_id, cv2.WINDOW_NORMAL)
+            except Exception as e:
+                logger.warning("Could not open window for '%s': %s. Switching to headless mode.", p.camera_id, e)
+                headless = True
+                break
 
     frame_publishers = [
         EdgeFramePublisher(pipeline.camera_id, lambda pipeline=pipeline: pipeline.latest_frame)
@@ -684,19 +729,37 @@ def main():
         while not stop_event.is_set():
             for p in pipelines:
                 f = p.step()
-                if f is not None:
-                    cv2.imshow(p.camera_id, f)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                if not headless:
+                    if f is not None:
+                        try:
+                            cv2.imshow(p.camera_id, f)
+                        except Exception as e:
+                            logger.warning("cv2.imshow failed for '%s': %s. Switching to headless mode.", p.camera_id, e)
+                            headless = True
+                    else:
+                        placeholder = np.zeros((360, 480, 3), dtype=np.uint8)
+                        cv2.putText(placeholder, f"[{p.camera_id}] Waiting for frames...", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                        cv2.putText(placeholder, "Connecting or camera offline", (20, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
+                        try:
+                            cv2.imshow(p.camera_id, placeholder)
+                        except Exception:
+                            headless = True
+            if not headless:
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
             # small sleep to let OS schedule
-            time.sleep(0.001)
+            time.sleep(0.002)
     finally:
         for publisher in frame_publishers:
             publisher.stop()
         for p in pipelines:
             p.stop()
         det_logger.close()
-        cv2.destroyAllWindows()
+        if not headless:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

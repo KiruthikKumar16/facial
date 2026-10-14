@@ -14,13 +14,32 @@ export const toneGradient: Record<string, string> = {
   indigo: 'from-indigo-500/40 to-indigo-900/60',
 }
 
+export function parseDateSafe(iso: string | undefined | null): Date | null {
+  if (!iso) return null
+  const s = String(iso).trim()
+  if (!s) return null
+
+  // Handle naive timestamps without timezone offset (e.g. "2026-10-12T18:03:01" or "2026-10-12 18:03:01")
+  // PostgreSQL TIMESTAMP WITHOUT TIME ZONE stores naive UTC. Treat naive timestamps as UTC (Z) so they convert accurately to IST.
+  const naiveMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$/)
+  if (naiveMatch) {
+    const utcIso = `${naiveMatch[1]}-${naiveMatch[2]}-${naiveMatch[3]}T${naiveMatch[4]}:${naiveMatch[5]}:${naiveMatch[6]}Z`
+    const dUtc = new Date(utcIso)
+    if (!isNaN(dUtc.getTime())) return dUtc
+  }
+
+  // Normalize excessive microsecond digits while preserving timezone offset (Z or +/-HH:MM)
+  const normalized = s.replace(/(\.\d{3})\d+([Z+-].*)?$/, '$1$2')
+  let d = new Date(normalized)
+  if (!isNaN(d.getTime())) return d
+
+  d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
 export function formatTime(iso: string | undefined | null): string {
-  if (!iso) return '—'
-  // Handle strings like "2026-09-24T08:15:59.324032" safely
-  const cleanIso = iso.split('.')[0]
-  let d = new Date(cleanIso)
-  if (isNaN(d.getTime())) d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
+  const d = parseDateSafe(iso)
+  if (!d) return '—'
   return d.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -30,15 +49,28 @@ export function formatTime(iso: string | undefined | null): string {
   })
 }
 
+export function formatDateTime(iso: string | undefined | null): string {
+  const d = parseDateSafe(iso)
+  if (!d) return '—'
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: DISPLAY_TIME_ZONE,
+  })
+}
+
 export function formatClock(iso: string | undefined | null): string {
-  if (!iso) return '—'
-  const cleanIso = iso.split('.')[0]
-  let d = new Date(cleanIso)
-  if (isNaN(d.getTime())) d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
+  const d = parseDateSafe(iso)
+  if (!d) return '—'
   return d.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
     hour12: false,
     timeZone: DISPLAY_TIME_ZONE,
   })

@@ -1,0 +1,573 @@
+"""CCTV Video Integrity & Security Auditor.
+
+Analyzes offline/hard-disk CCTV footage for client security audits:
+1. Discovers video files across cameras.
+2. Extracts metadata, frame count, FPS, and timestamps (from filename or metadata).
+3. Computes cryptographic SHA-256 hashes for chain-of-custody.
+4. Detects missing time intervals (gaps) and abnormally trimmed clips (tamper detection).
+5. Produces an audit-grade security continuity report (JSON & Markdown).
+"""
+
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import logging
+import os
+import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import cv2
+
+logger = logging.getLogger(__name__)
+
+VIDEO_EXTENSIONS = {
+    ".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".ts", ".webm"
+}
+
+# Regex patterns for extracting start timestamps from CCTV filenames
+TIMESTAMP_PATTERNS = [
+    # YYYY-MM-DD[_ ]HH-MM-SS or YYYY-MM-DD[_ ]HH:MM:SS or YYYY.MM.DD[_ ]HH.MM.SS
+    (
+        re.compile(
+            r"(\d{4})[-_. ](\d{2})[-_. ](\d{2})[-_ T](\d{2})[-_.:](\d{2})[-_.:](\d{2})"
+        ),
+        lambda m: datetime.datetime(
+            int(m.group(1)),
+            int(m.group(2)),
+            int(m.group(3)),
+            int(m.group(4)),
+            int(m.group(5)),
+            int(m.group(6)),
+        ),
+    ),
+    # Compact YYYYMMDD_HHMMSS or YYYYMMDDHHMMSS (e.g. 20261011_143000 or 20261011143000)
+    (
+        re.compile(r"(\d{4})(\d{2})(\d{2})_?(\d{2})(\d{2})(\d{2})"),
+        lambda m: datetime.datetime(
+            int(m.group(1)),
+            int(m.group(2)),
+            int(m.group(3)),
+            int(m.group(4)),
+            int(m.group(5)),
+            int(m.group(6)),
+        ),
+    ),
+    # Unix timestamp in milliseconds or seconds (e.g. 1787117422304 or 1787117422)
+    (
+        re.compile(r"(?:^|_)(\d{10,13})(?:$|_)"),
+        lambda m: (
+            datetime.datetime.fromtimestamp(int(m.group(1)) / 1000.0)
+            if len(m.group(1)) == 13
+            else datetime.datetime.fromtimestamp(int(m.group(1)))
+        ),
+    ),
+]
+
+
+@dataclass
+class VideoClipMetadata:
+    """Metadata for a single CCTV video clip."""
+    file_path: str
+    file_name: str
+    camera_id: str
+    file_size_bytes: int
+    sha256_hash: str
+    width: int
+    height: int
+    fps: float
+    frame_count: int
+    duration_seconds: float
+    start_time: str  # ISO string
+    end_time: str  # ISO string
+    is_abnormally_short: bool = False
+    notes: str = ""
+
+
+@dataclass
+class TimelineGap:
+    """A missing footage interval detected between consecutive clips."""
+    camera_id: str
+    gap_start: str  # ISO string
+    gap_end: str  # ISO string
+    gap_duration_seconds: float
+    formatted_duration: str
+    preceding_file: str
+    succeeding_file: str
+    severity: str  # 'CRITICAL_BLACKOUT', 'SUSPICIOUS_CUT', 'BUFFER_HITCH'
+    tamper_risk: str  # 'HIGH', 'MEDIUM', 'LOW'
+    description: str
+
+
+@dataclass
+class CameraContinuitySummary:
+    """Continuity summary for a specific camera."""
+    camera_id: str
+    total_clips: int
+    total_footage_seconds: float
+    formatted_footage_duration: str
+    earliest_timestamp: str
+    latest_timestamp: str
+    timeline_span_seconds: float
+    formatted_span_duration: str
+    total_gap_seconds: float
+    formatted_gap_duration: str
+    gap_count: int
+    continuity_percentage: float
+    tamper_verdict: str  # 'SECURE', 'GAPS_DETECTED', 'SUSPICIOUS_TRIMS'
+
+
+@dataclass
+class VideoAuditReport:
+    """Full comprehensive security audit report."""
+    scan_timestamp: str
+    root_directory: str
+    total_files_scanned: int
+    total_cameras: int
+    overall_continuity_percentage: float
+    security_verdict: str
+    total_footage_duration_seconds: float
+    formatted_total_footage: str
+    total_missing_gap_seconds: float
+    formatted_total_missing: str
+    total_gaps_detected: int
+    total_abnormal_trims: int
+    cameras_summary: List[CameraContinuitySummary] = field(default_factory=list)
+    gaps: List[TimelineGap] = field(default_factory=list)
+    clips: List[VideoClipMetadata] = field(default_factory=list)
+
+
+def format_seconds(seconds: float) -> str:
+    """Format duration in seconds to human-readable string."""
+    total = int(max(0, round(seconds)))
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def compute_sha256(file_path: Path, max_bytes: Optional[int] = None) -> str:
+    """Compute SHA-256 hash in 1MB chunks for chain-of-custody verification."""
+    hasher = hashlib.sha256()
+    bytes_read = 0
+    with file_path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            bytes_read += len(chunk)
+            if max_bytes and bytes_read >= max_bytes:
+                break
+    return hasher.hexdigest()
+
+
+def extract_camera_id(path: Path) -> str:
+    """Determine camera ID from directory name or filename prefix."""
+    parent_name = path.parent.name.lower()
+    # Check parent folder: e.g. "camera_1", "cam02", "gate_entrance", "lobby"
+    if any(k in parent_name for k in ["cam", "camera", "cctv", "node", "zone", "gate", "door", "entrance"]):
+        return path.parent.name
+
+    # Check filename prefix: e.g. "CAM01_...", "ch01_...", "camera-2_..."
+    m = re.match(r"^([a-zA-Z0-9_-]+?)[_.-](?:\d{4}|\d{8}|\d{10})", path.stem)
+    if m:
+        candidate = m.group(1).lower()
+        if any(k in candidate for k in ["cam", "camera", "ch", "node", "zone", "feed"]):
+            return m.group(1)
+
+    return "camera-1"
+
+
+def extract_clip_start_time(path: Path) -> datetime.datetime:
+    """Extract clip recording start time from filename, or fallback to file modified time."""
+    stem = path.stem
+    for pattern, parser in TIMESTAMP_PATTERNS:
+        m = pattern.search(stem)
+        if m:
+            try:
+                dt = parser(m)
+                # Sanity check: year must be reasonable (e.g. 2020-2035)
+                if 2020 <= dt.year <= 2035:
+                    return dt
+            except Exception:
+                pass
+
+    # Fallback: file modification time
+    try:
+        mtime = path.stat().st_mtime
+        return datetime.datetime.fromtimestamp(mtime)
+    except Exception:
+        return datetime.datetime.now()
+
+
+class VideoAuditor:
+    """Audits CCTV directory for missing footage, trimmed clips, and timeline continuity."""
+
+    def __init__(
+        self,
+        tolerance_seconds: float = 5.0,
+        min_clip_duration_threshold_ratio: float = 0.2,
+        compute_full_hashes: bool = True,
+    ) -> None:
+        """
+        Args:
+            tolerance_seconds: Allowable inter-clip gap before flagging as missing footage.
+            min_clip_duration_threshold_ratio: Fraction of median duration below which a clip is flagged as abnormally trimmed.
+            compute_full_hashes: Whether to compute SHA-256 for all clips.
+        """
+        self.tolerance_seconds = tolerance_seconds
+        self.min_clip_ratio = min_clip_duration_threshold_ratio
+        self.compute_full_hashes = compute_full_hashes
+
+    def scan_directory(self, root_dir: str | Path) -> VideoAuditReport:
+        """Recursively scan directory of CCTV footage and perform security timeline audit."""
+        root = Path(root_dir).resolve()
+        if not root.exists():
+            raise FileNotFoundError(f"Footage directory not found: {root}")
+
+        video_files: List[Path] = []
+        for ext in VIDEO_EXTENSIONS:
+            video_files.extend(root.rglob(f"*{ext}"))
+            video_files.extend(root.rglob(f"*{ext.upper()}"))
+
+        # Deduplicate paths
+        video_files = sorted(list(set(video_files)))
+
+        logger.info("Found %d video files in %s", len(video_files), root)
+
+        clips_by_camera: Dict[str, List[VideoClipMetadata]] = {}
+        all_clips: List[VideoClipMetadata] = []
+
+        # 1. Parse each clip
+        for vpath in video_files:
+            meta = self._analyze_single_clip(vpath, root)
+            if meta:
+                all_clips.append(meta)
+                clips_by_camera.setdefault(meta.camera_id, []).append(meta)
+
+        # 2. Audit each camera's timeline
+        all_gaps: List[TimelineGap] = []
+        cameras_summary: List[CameraContinuitySummary] = []
+
+        total_footage_sec = 0.0
+        total_gap_sec = 0.0
+
+        for cam_id, clips in sorted(clips_by_camera.items()):
+            # Sort chronologically by start_time
+            clips.sort(key=lambda c: c.start_time)
+
+            # Detect median clip duration to flag abnormal trims
+            durations = [c.duration_seconds for c in clips if c.duration_seconds > 0]
+            if durations:
+                median_dur = sorted(durations)[len(durations) // 2]
+                min_threshold = median_dur * self.min_clip_ratio
+                for c in clips:
+                    # Flag abnormally short clips (e.g. 15s when standard is 15-60 min)
+                    if c.duration_seconds < min_threshold and len(clips) > 1 and median_dur > 60:
+                        c.is_abnormally_short = True
+                        c.notes = f"Suspiciously short clip ({format_seconds(c.duration_seconds)} vs expected ~{format_seconds(median_dur)})"
+
+            cam_gaps: List[TimelineGap] = []
+            cam_footage_sec = sum(c.duration_seconds for c in clips)
+            total_footage_sec += cam_footage_sec
+
+            # Analyze consecutive clip intervals
+            for i in range(len(clips) - 1):
+                cur = clips[i]
+                nxt = clips[i + 1]
+
+                cur_end = datetime.datetime.fromisoformat(cur.end_time)
+                nxt_start = datetime.datetime.fromisoformat(nxt.start_time)
+
+                gap_seconds = (nxt_start - cur_end).total_seconds()
+
+                if gap_seconds > self.tolerance_seconds:
+                    # Missing clip interval detected!
+                    if gap_seconds > 600:
+                        severity = "CRITICAL_BLACKOUT"
+                        risk = "HIGH"
+                        desc = f"Major footage gap of {format_seconds(gap_seconds)}. Suspected deliberate deletion, camera tamper, or power failure."
+                    elif gap_seconds > 60:
+                        severity = "SUSPICIOUS_CUT"
+                        risk = "MEDIUM"
+                        desc = f"Footage missing for {format_seconds(gap_seconds)}. Possible trimmed or omitted video file."
+                    else:
+                        severity = "BUFFER_HITCH"
+                        risk = "LOW"
+                        desc = f"Minor gap of {format_seconds(gap_seconds)} between consecutive recordings."
+
+                    gap = TimelineGap(
+                        camera_id=cam_id,
+                        gap_start=cur_end.isoformat(),
+                        gap_end=nxt_start.isoformat(),
+                        gap_duration_seconds=round(gap_seconds, 2),
+                        formatted_duration=format_seconds(gap_seconds),
+                        preceding_file=cur.file_name,
+                        succeeding_file=nxt.file_name,
+                        severity=severity,
+                        tamper_risk=risk,
+                        description=desc,
+                    )
+                    cam_gaps.append(gap)
+                    all_gaps.append(gap)
+
+            cam_gap_sec = sum(g.gap_duration_seconds for g in cam_gaps)
+            total_gap_sec += cam_gap_sec
+
+            earliest_ts = clips[0].start_time if clips else ""
+            latest_ts = clips[-1].end_time if clips else ""
+
+            if earliest_ts and latest_ts:
+                span_sec = (
+                    datetime.datetime.fromisoformat(latest_ts)
+                    - datetime.datetime.fromisoformat(earliest_ts)
+                ).total_seconds()
+            else:
+                span_sec = cam_footage_sec
+
+            span_sec = max(span_sec, cam_footage_sec + cam_gap_sec, 0.001)
+            continuity_pct = max(0.0, min(100.0, (cam_footage_sec / span_sec) * 100.0))
+
+            if not cam_gaps and not any(c.is_abnormally_short for c in clips):
+                verdict = "SECURE"
+            elif any(g.severity == "CRITICAL_BLACKOUT" for g in cam_gaps):
+                verdict = "CRITICAL_GAPS_DETECTED"
+            elif cam_gaps:
+                verdict = "GAPS_DETECTED"
+            else:
+                verdict = "SUSPICIOUS_TRIMS"
+
+            cameras_summary.append(
+                CameraContinuitySummary(
+                    camera_id=cam_id,
+                    total_clips=len(clips),
+                    total_footage_seconds=round(cam_footage_sec, 2),
+                    formatted_footage_duration=format_seconds(cam_footage_sec),
+                    earliest_timestamp=earliest_ts,
+                    latest_timestamp=latest_ts,
+                    timeline_span_seconds=round(span_sec, 2),
+                    formatted_span_duration=format_seconds(span_sec),
+                    total_gap_seconds=round(cam_gap_sec, 2),
+                    formatted_gap_duration=format_seconds(cam_gap_sec),
+                    gap_count=len(cam_gaps),
+                    continuity_percentage=round(continuity_pct, 2),
+                    tamper_verdict=verdict,
+                )
+            )
+
+        # 3. Overall Verdict
+        total_trims = sum(1 for c in all_clips if c.is_abnormally_short)
+        total_span = total_footage_sec + total_gap_sec
+        overall_pct = (
+            round((total_footage_sec / total_span) * 100.0, 2)
+            if total_span > 0
+            else 100.0
+        )
+
+        if len(all_clips) == 0:
+            security_verdict = "NO_FOOTAGE_FOUND"
+        elif not all_gaps and total_trims == 0:
+            security_verdict = "SECURE_100_PERCENT_CONTINUOUS"
+        elif any(g.severity == "CRITICAL_BLACKOUT" for g in all_gaps):
+            security_verdict = "HIGH_SECURITY_ALERT_MISSING_FOOTAGE"
+        elif all_gaps:
+            security_verdict = "SECURITY_WARNING_TIMELINE_GAPS"
+        else:
+            security_verdict = "WARNING_SUSPICIOUS_CLIPS_DETECTED"
+
+        report = VideoAuditReport(
+            scan_timestamp=datetime.datetime.now().isoformat(),
+            root_directory=str(root),
+            total_files_scanned=len(all_clips),
+            total_cameras=len(clips_by_camera),
+            overall_continuity_percentage=overall_pct,
+            security_verdict=security_verdict,
+            total_footage_duration_seconds=round(total_footage_sec, 2),
+            formatted_total_footage=format_seconds(total_footage_sec),
+            total_missing_gap_seconds=round(total_gap_sec, 2),
+            formatted_total_missing=format_seconds(total_gap_sec),
+            total_gaps_detected=len(all_gaps),
+            total_abnormal_trims=total_trims,
+            cameras_summary=cameras_summary,
+            gaps=all_gaps,
+            clips=all_clips,
+        )
+
+        return report
+
+    def _analyze_single_clip(self, vpath: Path, root: Path) -> Optional[VideoClipMetadata]:
+        """Inspect a video file using OpenCV and filesystem metadata."""
+        try:
+            cam_id = extract_camera_id(vpath)
+            file_size = vpath.stat().st_size
+            if file_size == 0:
+                logger.warning("Skipping 0-byte video file: %s", vpath)
+                return None
+
+            cap = cv2.VideoCapture(str(vpath))
+            if not cap.isOpened():
+                logger.warning("OpenCV could not open video: %s", vpath)
+                return None
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = float(cap.get(cv2.CAP_PROP_FPS))
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+
+            if fps <= 0 or frame_count <= 0:
+                # Fallback FPS if container header is corrupt
+                fps = 25.0
+                duration_sec = 0.0
+            else:
+                duration_sec = frame_count / fps
+
+            start_dt = extract_clip_start_time(vpath)
+            end_dt = start_dt + datetime.timedelta(seconds=duration_sec)
+
+            # Hash for evidence verification
+            sha256 = (
+                compute_sha256(vpath)
+                if self.compute_full_hashes
+                else compute_sha256(vpath, max_bytes=10 * 1024 * 1024)
+            )
+
+            rel_name = str(vpath.relative_to(root))
+
+            return VideoClipMetadata(
+                file_path=str(vpath),
+                file_name=rel_name,
+                camera_id=cam_id,
+                file_size_bytes=file_size,
+                sha256_hash=sha256,
+                width=width,
+                height=height,
+                fps=round(fps, 2),
+                frame_count=frame_count,
+                duration_seconds=round(duration_sec, 2),
+                start_time=start_dt.isoformat(),
+                end_time=end_dt.isoformat(),
+            )
+        except Exception as exc:
+            logger.error("Failed to analyze clip %s: %s", vpath, exc)
+            return None
+
+
+def generate_markdown_report(report: VideoAuditReport) -> str:
+    """Format the audit report into an enterprise-ready Markdown document."""
+    lines: List[str] = [
+        "# Sentinel Forensics: CCTV Footage Continuity & Security Audit",
+        "",
+        f"**Audit Timestamp**: `{report.scan_timestamp}`  ",
+        f"**Root Directory**: `{report.root_directory}`  ",
+        f"**Security Verdict**: **{report.security_verdict}**  ",
+        f"**Overall Continuity**: **{report.overall_continuity_percentage}%**  ",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary",
+        "",
+        "| Metric | Value |",
+        "| :--- | :--- |",
+        f"| **Total Video Files** | {report.total_files_scanned} |",
+        f"| **Total Cameras** | {report.total_cameras} |",
+        f"| **Total Recorded Footage** | {report.formatted_total_footage} ({report.total_footage_duration_seconds:.1f}s) |",
+        f"| **Total Missing Time Gaps** | {report.formatted_total_missing} ({report.total_missing_gap_seconds:.1f}s) |",
+        f"| **Number of Gaps Identified** | {report.total_gaps_detected} |",
+        f"| **Abnormally Trimmed Clips** | {report.total_abnormal_trims} |",
+        f"| **Continuity Rating** | **{report.overall_continuity_percentage}%** |",
+        "",
+        "---",
+        "",
+        "## 2. Camera-by-Camera Breakdown",
+        "",
+        "| Camera ID | Clips | Recorded Time | Timeline Span | Missing Gap | Continuity | Status |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+
+    for c in report.cameras_summary:
+        lines.append(
+            f"| `{c.camera_id}` | {c.total_clips} | {c.formatted_footage_duration} | "
+            f"{c.formatted_span_duration} | {c.formatted_gap_duration} | "
+            f"{c.continuity_percentage}% | `{c.tamper_verdict}` |"
+        )
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 3. Detected Footage Gaps & Potential Tamper Events",
+        "",
+    ])
+
+    if not report.gaps:
+        lines.append("✅ **No timeline gaps detected.** Footage is 100% continuous across all cameras.\n")
+    else:
+        lines.extend([
+            "| Camera | Gap Start | Gap End | Duration | Risk | Reason |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ])
+        for g in report.gaps:
+            lines.append(
+                f"| `{g.camera_id}` | `{g.gap_start}` | `{g.gap_end}` | "
+                f"**{g.formatted_duration}** | `{g.tamper_risk}` | {g.description} |"
+            )
+        lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## 4. Chain-of-Custody Cryptographic Manifest",
+        "",
+        "| Relative File | Camera | Start Time | Duration | SHA-256 Checksum |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ])
+
+    for clip in report.clips:
+        short_hash = f"`{clip.sha256_hash[:16]}...`"
+        lines.append(
+            f"| `{clip.file_name}` | `{clip.camera_id}` | `{clip.start_time}` | "
+            f"{format_seconds(clip.duration_seconds)} | {short_hash} |"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Sentinel CCTV Security & Continuity Auditor")
+    parser.add_argument("--dir", required=True, help="Path to CCTV video folder or drive")
+    parser.add_argument("--tolerance", type=float, default=5.0, help="Allowable gap in seconds before flagging (default: 5.0)")
+    parser.add_argument("--output", default="cctv_audit_report.md", help="Output Markdown report path")
+    parser.add_argument("--json", default="cctv_audit_report.json", help="Output JSON report path")
+    args = parser.parse_args()
+
+    auditor = VideoAuditor(tolerance_seconds=args.tolerance)
+    print(f"[*] Scanning footage in: {args.dir}...")
+    report_data = auditor.scan_directory(args.dir)
+
+    md_content = generate_markdown_report(report_data)
+    with open(args.output, "w", encoding="utf-8") as f:
+        f.write(md_content)
+
+    with open(args.json, "w", encoding="utf-8") as f:
+        json.dump(asdict(report_data), f, indent=2)
+
+    print("\n[+] Audit Complete!")
+    print(f"    - Files Scanned: {report_data.total_files_scanned}")
+    print(f"    - Cameras: {report_data.total_cameras}")
+    print(f"    - Continuity: {report_data.overall_continuity_percentage}%")
+    print(f"    - Gaps Detected: {report_data.total_gaps_detected} (Total Missing: {report_data.formatted_total_missing})")
+    print(f"    - Security Verdict: {report_data.security_verdict}")
+    print(f"    - Markdown Report Saved: {args.output}")
+    print(f"    - JSON Report Saved: {args.json}")

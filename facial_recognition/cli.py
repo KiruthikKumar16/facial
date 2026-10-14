@@ -23,6 +23,7 @@ class RunOptions:
     tier: Optional[str] = None
     frame_skip: Optional[int] = None
     webcam_index: Optional[int] = None
+    webcam_only: bool = False
 
 
 def _parse_camera_size(value: str) -> Tuple[int, int]:
@@ -76,6 +77,8 @@ def parse_run_args(description: str, *, cpu: bool = False) -> RunOptions:
         help=f'Max quality preset: {MAX_DET_SIZE}px detection, {MAX_MODEL}, {MAX_CAMERA_WIDTH}x{MAX_CAMERA_HEIGHT} camera',
     )
     parser.add_argument('--webcam', type=int, metavar='INDEX', help='Webcam device index (default: from config)')
+    parser.add_argument('--webcam-only', action='store_true', help='Only use local webcam, skip RTSP/DVR streams')
+    parser.add_argument('--no-rtsp', action='store_true', dest='webcam_only', help='Skip RTSP/DVR streams')
     if cpu:
         parser.add_argument(
             '--tier',
@@ -106,6 +109,7 @@ def parse_run_args(description: str, *, cpu: bool = False) -> RunOptions:
         tier=getattr(args, 'tier', None),
         frame_skip=getattr(args, 'frame_skip', None),
         webcam_index=args.webcam,
+        webcam_only=getattr(args, 'webcam_only', False),
     )
 
 

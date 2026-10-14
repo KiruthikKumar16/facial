@@ -16,7 +16,6 @@ import {
 } from 'recharts'
 import {
   fetchAttendance,
-  fetchFaceLogs,
   fetchFootfall,
   fetchGenderDistribution
 } from '@/lib/api'
@@ -34,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatClock } from '@/lib/format'
+import { formatClock, parseDateSafe } from '@/lib/format'
 import {
   ChartColumnBig,
   Clock,
@@ -49,70 +48,6 @@ const GENDER_COLORS: Record<string, string> = {
   Unknown: '#9ca3af'
 }
 
-// Helper function to fetch gender distribution filtered by date
-const fetchGenderDistributionByDate = async (selectedDates: Date[]): Promise<{ label: string; value: number }[]> => {
-  // If no dates selected, default to today
-  const filterDates = selectedDates.length > 0 ? selectedDates : [new Date()]
-
-  try {
-    // Fetch face logs (we'll get a reasonable limit to cover the date range)
-    const faceLogs = await fetchFaceLogs(10000) // Get all detections for the day to ensure total count matches
-
-    // Filter logs by selected dates
-    const filteredLogs = faceLogs.filter(log => {
-      const logDate = parseTimestampToDate(log.timestamp)
-      return filterDates.some(filterDate => isSameDay(logDate, filterDate))
-    })
-
-    // Deduplicate by profileId (to avoid counting the same person multiple times)
-    // Unknowns without a profileId will be counted individually unless they can be grouped
-    const uniqueLogs = []
-    const seenProfiles = new Set<string>()
-    
-    for (const log of filteredLogs) {
-      if (log.profileId) {
-        if (!seenProfiles.has(log.profileId)) {
-          seenProfiles.add(log.profileId)
-          uniqueLogs.push(log)
-        }
-      } else {
-        // For unknown faces, we have to include them, but ideally we'd track them uniquely too
-        uniqueLogs.push(log)
-      }
-    }
-
-    // Aggregate by gender
-    const genderCounts = {
-      male: 0,
-      female: 0,
-      unknown: 0
-    }
-
-    uniqueLogs.forEach(log => {
-      if (log.gender === 'male') {
-        genderCounts.male++
-      } else if (log.gender === 'female') {
-        genderCounts.female++
-      } else {
-        genderCounts.unknown++
-      }
-    })
-
-    // Convert to the format expected by DemographicPie
-    return [
-      { label: 'Male', value: genderCounts.male },
-      { label: 'Female', value: genderCounts.female },
-      { label: 'Unknown', value: genderCounts.unknown }
-    ]
-  } catch (error) {
-    // Return empty data on error
-    return [
-      { label: 'Male', value: 0 },
-      { label: 'Female', value: 0 },
-      { label: 'Unknown', value: 0 }
-    ]
-  }
-}
 
 const tooltipStyle = {
   backgroundColor: 'var(--popover)',
@@ -538,46 +473,6 @@ function DateSelector({
   )
 }
 
-// Helper function to check if two dates are the same day
-function isSameDay(date1: Date, date2: Date): boolean {
-  return date1.getDate() === date2.getDate() &&
-         date1.getMonth() === date2.getMonth() &&
-         date1.getFullYear() === date2.getFullYear()
-}
-
-// Helper function to parse timestamp string to Date object, handling local time format
-function parseTimestampToDate(timestamp: string): Date {
-  // Try parsing as ISO format first (with T and/or Z)
-  const date = new Date(timestamp)
-
-  // If that gives a valid date and the year is not 1970 (indicating time-only string),
-  // return it directly
-  if (!isNaN(date.getTime()) && date.getFullYear() !== 1970) {
-    return date
-  }
-
-  // If parsing failed or gave year 1970, try to parse as "YYYY-MM-DD HH:MM:SS" format
-  // This handles cases where timestamp is in local time without timezone designator
-  const match = timestamp.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/)
-  if (match) {
-    const [, year, month, day, hour, minute, second] = match
-    // Month is 0-indexed in JavaScript Date
-    return new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10),
-                    parseInt(hour, 10), parseInt(minute, 10), parseInt(second, 10))
-  }
-
-  // If that also fails, try to parse as "YYYY-MM-DDTHH:MM:SS" format
-  const match2 = timestamp.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/)
-  if (match2) {
-    const [, year, month, day, hour, minute, second] = match2
-    // Month is 0-indexed in JavaScript Date
-    return new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10),
-                    parseInt(hour, 10), parseInt(minute, 10), parseInt(second, 10))
-  }
-
-  // Fallback to returning an invalid date if all parsing attempts fail
-  return new Date(NaN)
-}
 
 function DemographicPie({
   title,

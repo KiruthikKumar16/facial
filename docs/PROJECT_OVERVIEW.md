@@ -4,136 +4,97 @@
 
 ```
 facial/
-├── facial_recognition/          # Edge CV Node (local processing)
-│   ├── data/                    # CSV detection logs (migrated from root)
-│   ├── known_faces/             # Known faces gallery (organized by person)
-│   ├── pending/                 # Temporary storage for unknown faces
-│   ├── main.py                  # Main entry point (GPU optimized)
-│   ├── main_cpu.py              # CPU-optimized version
-│   ├── pc_frame_sender.py       # PC frame sender for remote detection
-│   ├── remote_detector.py       # Remote detection client
-│   ├── enroll.py                # Build gallery from known_faces/
-│   ├── review_pending.py        # Review and label unknown faces
-│   ├── detector.py              # Face detection wrapper
-│   ├── recognizer.py            # Face recognition logic
-│   ├── logger.py                # Detection logging and cloud sync
-│   ├── event_ledger.py          # Transactional event ledger (SQLite)
-│   ├── config.yaml              # Configuration file
-│   └── ...                      # Other modules (tracking, quality, etc.)
+├── facial_recognition/          # Core AI & Edge CV Engine
+│   ├── known_faces/             # Enrolled faces gallery (.npz and face crops)
+│   ├── pending/                 # Stored observations for unrecognized individuals
+│   ├── main.py                  # Main entry point (GPU / CUDA accelerated)
+│   ├── main_cpu.py              # CPU-optimized edge detection pipeline
+│   ├── pc_frame_sender.py       # Frame sender client for remote detector microservices
+│   ├── remote_detector.py       # Client for offloaded detection inference
+│   ├── enroll.py                # Tool to build gallery embeddings from known_faces/
+│   ├── detector.py              # InsightFace (SCRFD + ArcFace) detection wrapper
+│   ├── recognizer.py            # Cosine similarity recognition & gallery search
+│   ├── logger.py                # Detection logging & cloud sync worker
+│   ├── event_ledger.py          # Cryptographic SQLite WAL transaction ledger
+│   ├── topology.py              # Physical camera topology & transition graph
+│   ├── cross_camera_tracker.py  # Cross-camera identity continuity engine
+│   ├── quality.py               # Face anti-spoofing & ISO quality assessor
+│   ├── track_fusion.py          # Temporal multi-frame observation fusion
+│   ├── config.yaml              # Edge pipeline configuration
+│   └── ...
 │
-├── backend/                     # Cloud API (FastAPI)
-│   ├── main.py                  # FastAPI application entry point
-│   ├── models.py                # SQLAlchemy models
-│   ├── schemas.py               # Pydantic schemas
-│   ├── config.py                # Configuration
-│   ├── database.py              # Database setup
-│   ├── websocket.py             # WebSocket handlers
-│   └── ...                      # Routers, tasks, etc.
+├── backend/                     # Cloud / Server API (FastAPI)
+│   ├── main.py                  # FastAPI application entrypoint & MJPEG streams
+│   ├── models.py                # SQLAlchemy models (pgvector integration)
+│   ├── schemas.py               # Pydantic schemas (camelCase serialization)
+│   ├── config.py                # Application settings & IST timezone helpers
+│   ├── database.py              # PostgreSQL engine & connection pool management
+│   ├── auth.py                  # JWT authentication & login endpoints
+│   ├── middleware.py            # Security headers & token verification middleware
+│   ├── dependencies.py          # API key verification for edge nodes
+│   ├── state.py                 # Shared memory frame store & model registry
+│   ├── websocket.py             # Distributed WebSocket relay & connection manager
+│   ├── routers/                 # Modular API route controllers
+│   │   ├── analytics.py         # Footfall, demographics, attendance, trajectory
+│   │   ├── cameras.py           # Camera lifecycle & versioned configuration
+│   │   ├── detections.py        # Edge detection ingestion & sequence reconciliation
+│   │   ├── forensic.py          # Vector forensic image search
+│   │   ├── logs.py              # Detection logs & alert acknowledgement
+│   │   ├── profiles.py          # Identity enrollment, deletion & profile merging
+│   │   ├── system.py            # System KPIs, health checks & version snapshots
+│   │   └── unregistered.py      # Unregistered subject clustering & registration
+│   ├── tests/                   # Automated pytest suite
+│   ├── requirements.txt         # Backend Python dependencies
+│   └── Dockerfile               # Backend container build
 │
-├── facial-recognition-dashboard/# Next.js frontend dashboard
-│   ├── ...                      # Next.js application
+├── facial-recognition-dashboard/# Next.js Frontend Dashboard
+│   ├── app/                     # App router pages & API proxy
+│   ├── components/              # Shadcn UI & real-time dashboard tabs
+│   ├── lib/                     # API client, TypeScript types, formatters
+│   ├── package.json             # Frontend dependencies
+│   └── next.config.mjs          # Next.js build configuration
 │
-├── scripts/                     # PowerShell helper scripts
-│   ├── setup-all.ps1            # Complete setup
-│   ├── run-backend.ps1          # Start backend
-│   ├── run-frontend.ps1         # Start frontend
-│   ├── DEPLOYMENT_CHECKLIST.ps1 # Validate environment
-│   └── sync_gallery_to_supabase.py # Sync gallery to cloud
-│
-├── colab_detection_service.py   # Google Colab detection service
-├── colab_detection_notebook.ipynb # Colab notebook for remote detection
-├── docker-compose.yml           # Docker compose configuration
-├── README.md                    # This file
-└── requirements.txt             # Python dependencies
+├── docker-compose.jarvislabs.yml# Production GPU stack for JarvisLabs
+├── Dockerfile.detector          # Dedicated GPU InsightFace detection service container
+├── docker-compose.yml           # Local dev multi-container stack
+├── DEPLOY_JARVIS_VERCEL.md      # Step-by-step JarvisLabs & Vercel deployment instructions
+├── requirements.txt             # Project-wide Python dependencies
+└── .env.example                 # Root configuration template
 ```
+
+---
 
 ## Key Components
 
 ### 1. Edge CV Node (`facial_recognition/`)
-- Processes live video feeds locally
-- Uses InsightFace/ONNX for face detection and recognition
-- Maintains local known faces gallery (`known_faces/`)
-- Logs detections to SQLite ledger (`facial_recognition.db`)
-- Synchronizes with cloud via dual-write pipeline (local CSV + async POST)
-- Handles unknown face review and enrollment
+- Captures live video feeds from webcams or RTSP security cameras.
+- Uses InsightFace (`buffalo_s` / `buffalo_l`) for face detection, 5-point landmark alignment, and 512-dim embedding extraction.
+- Stores local enrollments in `known_faces/gallery.npz`.
+- Implements an offline-first cryptographic SQLite WAL ledger (`facial_recognition.db`) guaranteeing zero event loss during network interruptions.
+- Streams detection events asynchronously to the cloud with SHA-256 idempotency.
 
 ### 2. Cloud API (`backend/`)
-- FastAPI server running on Render
-- Receives detection events from edge nodes
-- Stores events in PostgreSQL with pgvector extension
-- Provides REST API for dashboard and mobile clients
-- Handles WebSocket connections for real-time updates
-- Includes forensic search, analytics, and management endpoints
+- FastAPI server running on JarvisLabs / cloud servers.
+- Receives detection events from edge nodes with automatic deduplication.
+- Interacts with Supabase PostgreSQL using `pgvector` HNSW indexes for sub-millisecond similarity search.
+- Exposes WebSocket channels (`/ws/alerts`, `/ws/kpis`, `/ws/cameras`) for real-time telemetry.
+- Provides forensic vector search, duplicate profile identification, and attendance tracking.
 
 ### 3. Dashboard (`facial-recognition-dashboard/`)
-- Next.js 14 React application
-- Real-time visualization of detections, alerts, and analytics
-- WebSocket connections for live updates
-- Forensic search interface
-- Identity management and deduplication tools
+- Next.js 16 / React application deployed on Vercel.
+- Real-time visualization of detections, live camera streams, and critical security alerts.
+- Interactive analytics: Footfall charts, camera movement graphs, age/gender demographic slices, and employee attendance.
+- Identity management: Enrollment, duplicate profile merging, and unregistered subject labeling.
 
-### 4. Remote Detection (Colab/Kaggle)
-- `colab_detection_service.py`: Detection microservice for Colab
-- `colab_detection_notebook.ipynb`: Ready-to-use Colab notebook
-- `pc_frame_sender.py`: Sends frames from PC to Colab for processing
-- Enables offloading heavy ML inference to cloud GPUs
+---
 
 ## Data Flow
 
-1. **Local Processing**: 
-   - Camera → Face Detection → Recognition → Local Storage (SQLite + CSV)
-   
-2. **Cloud Synchronization**:
-   - Local events → Async POST → Cloud API → PostgreSQL
-   
-3. **Dashboard Updates**:
-   - Cloud DB → REST/WebSocket → Frontend UI
-   
-4. **Remote Detection (Optional)**:
-   - PC Camera → Frame Sender → Colab Detection → Results → Cloud API
-
-## Getting Started
-
-See `scripts/setup-all.ps1` for complete automated setup, or follow these steps:
-
-1. **Database**: Set up Supabase PostgreSQL with pgvector extension
-2. **Backend**: 
-   ```bash
-   cd backend
-   pip install -r requirements.txt
-   uvicorn main:app --reload
-   ```
-3. **Frontend**:
-   ```bash
-   cd facial-recognition-dashboard
-   pnpm install
-   pnpm dev
-   ```
-4. **Edge CV**:
-   ```bash
-   cd facial_recognition
-   python run.py          # GPU
-   # or
-   python main_cpu.py     # CPU optimized
-   ```
-
-## Configuration
-
-Key configuration files:
-- `facial_recognition/config.yaml` - Edge node settings
-- `backend/config.py` - Backend settings
-- Environment variables (see `.env.example`)
-
-## Features
-
-- Real-time face detection and recognition
-- PostgreSQL pgvector for similarity search
-- Dual-write pipeline for zero data loss
-- Identity deduplication
-- Cross-camera tracking
-- Forensic search capabilities
-- WebSocket-based real-time dashboard
-- Configurable quality thresholds
-- Remote detection via Colab/Kaggle
-- Comprehensive analytics and reporting
-
+1. **Local Processing**:
+   Camera Frame → Face Detection → Alignment → Embedding → Cosine Comparison against Local Gallery
+2. **Local Persistence**:
+   Event Transaction Logged to SQLite WAL Ledger (Monotonic Sequence Assigned)
+3. **Cloud Synchronization**:
+   Async HTTP POST with `event_id` and provenance lineage → Backend API → Supabase PostgreSQL
+4. **Real-Time Distribution**:
+   Backend triggers WebSocket broadcast → Dashboard updates without browser refresh

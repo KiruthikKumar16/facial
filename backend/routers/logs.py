@@ -1,6 +1,6 @@
 
 from fastapi import APIRouter, File, UploadFile, Form, Depends, Query, HTTPException, Request, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, extract, text, case, select, or_
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
@@ -10,12 +10,11 @@ import json
 from database import get_db
 from models import *
 from schemas import *
-from config import settings, IST
+from config import settings, IST, to_ist_iso
 from dependencies import verify_edge_node
 from utils import snapshot_tone_for
 
 router = APIRouter(tags=['Logs & Alerts'])
-
 
 
 # ==================== Detection/Log Endpoints ====================
@@ -27,7 +26,10 @@ def get_logs(
     db: Session = Depends(get_db)
 ):
     """Get face detection logs."""
-    detections = db.query(Detection).order_by(
+    detections = db.query(Detection).options(
+        joinedload(Detection.camera),
+        joinedload(Detection.profile),
+    ).order_by(
         Detection.timestamp.desc()
     ).limit(limit).offset(offset).all()
     
@@ -38,7 +40,7 @@ def get_logs(
             id=det.id,
             camera_id=det.camera_id,
             camera_name=det.camera.name if det.camera else "Unknown",
-            timestamp=det.timestamp.isoformat(),
+            timestamp=to_ist_iso(det.timestamp),
             status=det.status.value,
             confidence=det.confidence,
             liveness_score=det.liveness_score,
@@ -50,6 +52,7 @@ def get_logs(
             wearing_mask=det.wearing_mask,
             wearing_glasses=det.wearing_glasses,
             snapshot_tone=snapshot_tone_for(det.id),
+            face_image=det.face_image,
         ))
     
     return results
@@ -66,7 +69,11 @@ def get_alerts(
     db: Session = Depends(get_db)
 ):
     """Get recent alerts."""
-    alerts = db.query(Alert).order_by(
+    alerts = db.query(Alert).options(
+        joinedload(Alert.camera),
+        joinedload(Alert.profile),
+        joinedload(Alert.detection),
+    ).order_by(
         Alert.timestamp.desc()
     ).limit(limit).all()
     
@@ -78,7 +85,7 @@ def get_alerts(
             log_id=alert.detection_id or "",
             camera_id=alert.camera_id,
             camera_name=alert.camera.name if alert.camera else "Unknown",
-            timestamp=alert.timestamp.isoformat(),
+            timestamp=to_ist_iso(alert.timestamp),
             severity=alert.severity,
             reason=alert.reason,
             profile_id=alert.profile_id,
@@ -114,7 +121,7 @@ def acknowledge_alert(
         log_id=alert.detection_id or "",
         camera_id=alert.camera_id,
         camera_name=alert.camera.name if alert.camera else "Unknown",
-        timestamp=alert.timestamp.isoformat(),
+        timestamp=to_ist_iso(alert.timestamp),
         severity=alert.severity,
         reason=alert.reason,
         profile_id=alert.profile_id,

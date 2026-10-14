@@ -1,4 +1,4 @@
-import { apiUrl, authFetch, handleResponse, strOrEmpty, numOrZero } from './config';
+import { authFetch, handleResponse, strOrEmpty, numOrZero } from './config';
 import type { SystemKpis, FootfallBucket, SubjectTrajectory, MovementNetwork, DuplicateCandidate, DemographicSlice, AttendanceRecord } from '../types';
 
 import { adaptKpis, adaptFootfallBucket, adaptSubjectTrajectory, adaptDuplicateCandidate, adaptDemographicSlice, adaptAttendanceRecord } from './adapters';

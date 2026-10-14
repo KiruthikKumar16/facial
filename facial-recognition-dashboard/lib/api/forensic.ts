@@ -1,4 +1,4 @@
-import { apiUrl, authFetch, handleResponse, strOrEmpty, numOrZero } from './config';
+import { authFetch, handleResponse, strOrEmpty, numOrZero } from './config';
 import type { ForensicMatch, RecognitionProvenance, Gender } from '../types';
 
 import { adaptForensicMatch } from './adapters';

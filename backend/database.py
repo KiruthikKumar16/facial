@@ -8,39 +8,65 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 db_url = os.environ.get("DATABASE_URL") or settings.database_url
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
 # Automatically use Supabase Transaction Mode Pooler (port 6543) if using a pooler URL
 # to bypass the 15-connection strict limit on port 5432.
 if ".pooler.supabase.com:5432" in db_url:
     db_url = db_url.replace(".pooler.supabase.com:5432", ".pooler.supabase.com:6543")
 
+is_sqlite = db_url.startswith("sqlite")
+allow_sqlite_fallback = os.environ.get("ALLOW_SQLITE_FALLBACK", "false").lower() in ("true", "1")
+
 try:
-    engine = create_engine(
-        db_url,
-        echo=settings.debug,
-        pool_size=20,
-        max_overflow=20,
-        pool_timeout=30,
-        pool_pre_ping=True,  # Help recover stale connections
-        connect_args={"prepare_threshold": None},  # Disable prepared statements for pgBouncer transaction mode
-    )
-    
-    @event.listens_for(engine, "connect")
-    def set_timezone(dbapi_conn, connection_record):
-        if engine.dialect.name == "postgresql":
-            cursor = dbapi_conn.cursor()
-            cursor.execute("SET TIMEZONE='Asia/Kolkata'")
-            cursor.close()
-            
+    if is_sqlite:
+        engine = create_engine(
+            db_url,
+            echo=settings.debug,
+            connect_args={"check_same_thread": False},
+        )
+    else:
+        engine = create_engine(
+            db_url,
+            echo=settings.debug,
+            pool_size=20,
+            max_overflow=20,
+            pool_timeout=30,
+            pool_pre_ping=True,  # Help recover stale connections
+            connect_args={"prepare_threshold": None},  # Disable prepared statements for pgBouncer transaction mode
+        )
     # Validate connection driver availability
     engine.dialect.dbapi
 except Exception as e:
-    logger.warning(f"Database dialect/driver initialization failed for {db_url}: {e}. Using local SQLite fallback.")
+    if not allow_sqlite_fallback and not is_sqlite:
+        logger.critical(f"FATAL: Database connection failed for {db_url}: {e}")
+        raise RuntimeError(
+            f"Production database connection failed: {e}. "
+            "Halting to prevent silent local SQLite fallback and data loss. "
+            "Set ALLOW_SQLITE_FALLBACK=1 only for offline local testing."
+        ) from e
+
+    logger.warning(f"Database initialization failed for {db_url}: {e}. Falling back to SQLite.")
     db_url = "sqlite:///./facial_recognition.db"
     engine = create_engine(
         db_url,
         echo=settings.debug,
         connect_args={"check_same_thread": False},
     )
+
+@event.listens_for(engine, "connect")
+def on_db_connect(dbapi_conn, connection_record):
+    """Configure PostgreSQL session timezone and ensure vector extension."""
+    if engine.dialect.name == "postgresql":
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("SET TIMEZONE='Asia/Kolkata'")
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        except Exception as ex:
+            logger.warning(f"PostgreSQL connection hook warning: {ex}")
+        finally:
+            cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -126,15 +152,3 @@ def get_db():
     finally:
         db.close()
 
-
-@event.listens_for(engine, "connect")
-def _ensure_pgvector_extension(dbapi_conn, connection_record):
-    """Ensure the pgvector extension is enabled (Supabase already has it; safe no-op otherwise)."""
-    try:
-        cursor = dbapi_conn.cursor()
-        try:
-            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        finally:
-            cursor.close()
-    except Exception as e:
-        print(f"Warning: Could not load pgvector extension: {e}")

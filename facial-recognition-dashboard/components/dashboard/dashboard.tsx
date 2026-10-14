@@ -8,6 +8,7 @@ import { ForensicTab } from './tabs/forensic-tab'
 import { ProfilesTab } from './tabs/profiles-tab'
 import { AnalyticsTab } from './tabs/analytics-tab'
 import { SystemTab } from './tabs/system-tab'
+import { CctvAuditPanel } from './cctv-audit-panel'
 import { ErrorBoundary } from '@/components/ui/error-boundary'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
@@ -15,6 +16,7 @@ import { connectAlertsWebSocket, connectCamerasWebSocket, connectKpisWebSocket, 
 import {
   Siren,
   Search,
+  HardDrive,
   UsersRound,
   ChartColumnBig,
   ServerCog,
@@ -23,6 +25,7 @@ import {
 const TABS = [
   { value: 'alerts', label: 'Alerts & Event Trail', icon: Siren },
   { value: 'forensic', label: 'Forensic Search', icon: Search },
+  { value: 'audit', label: 'CCTV Audit & Ingest', icon: HardDrive },
   { value: 'profiles', label: 'Vector Management', icon: UsersRound },
   { value: 'analytics', label: 'Analytics', icon: ChartColumnBig },
   { value: 'system', label: 'System Health', icon: ServerCog },
@@ -60,10 +63,10 @@ export function Dashboard() {
         queryClient.invalidateQueries({ queryKey: ['unknown-captures'] })
       }
     })
-    const wsCameras = connectCamerasWebSocket((data) => {
+    const wsCameras = connectCamerasWebSocket(() => {
       queryClient.invalidateQueries({ queryKey: ['cameras'] })
     })
-    const wsKpis = connectKpisWebSocket((data) => {
+    const wsKpis = connectKpisWebSocket(() => {
       queryClient.invalidateQueries({ queryKey: ['kpis'] })
       queryClient.invalidateQueries({ queryKey: ['footfall'] })
       queryClient.invalidateQueries({ queryKey: ['attendance'] })
@@ -104,6 +107,9 @@ export function Dashboard() {
           </TabsContent>
           <TabsContent value="forensic">
             <ErrorBoundary><ForensicTab /></ErrorBoundary>
+          </TabsContent>
+          <TabsContent value="audit">
+            <ErrorBoundary><CctvAuditPanel /></ErrorBoundary>
           </TabsContent>
           <TabsContent value="profiles">
             <ErrorBoundary><ProfilesTab /></ErrorBoundary>

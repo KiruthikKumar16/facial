@@ -42,6 +42,14 @@ def _subject_response(subject: UnregisteredSubject, db: Session) -> Unregistered
     else:
         emb_list = []
     fingerprint = hashlib.sha256(json.dumps(emb_list).encode()).hexdigest()
+
+    thumb = subject.thumbnail
+    if not thumb and detections:
+        for d in reversed(detections):
+            if d.face_image:
+                thumb = d.face_image
+                break
+
     return UnregisteredSubjectResponse(
         id=subject.id,
         display_name=subject.display_name,
@@ -54,6 +62,7 @@ def _subject_response(subject: UnregisteredSubject, db: Session) -> Unregistered
         vector_dimension=len(emb_list) if emb_list else 512,
         event_ids=event_ids[:100],
         status=subject.status,
+        thumbnail=thumb,
     )
 
 def _subject_vector(value: Any) -> Optional[np.ndarray]:
@@ -99,6 +108,7 @@ def _refresh_unregistered_subjects(db: Session, threshold: Optional[float] = Non
                 display_name=f"Unknown Person {len(subjects) + 1}",
                 representative_embedding=vector.tolist(),
                 similarity_threshold=threshold,
+                thumbnail=detection.face_image,
                 status="active",
                 created_at=detection.timestamp,
                 updated_at=detection.timestamp,
@@ -106,6 +116,9 @@ def _refresh_unregistered_subjects(db: Session, threshold: Optional[float] = Non
             db.add(subject)
             subjects.append(subject)
             best_subject = subject
+        elif not best_subject.thumbnail and detection.face_image:
+            best_subject.thumbnail = detection.face_image
+            db.add(best_subject)
 
         detection.unregistered_subject_id = best_subject.id
         db.add(detection)
@@ -153,7 +166,15 @@ def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegis
         role = ProfileRole(req.role.lower()) if req.role else ProfileRole.visitor
     except (ValueError, AttributeError):
         role = ProfileRole.visitor
-    profile = Profile(id=str(uuid.uuid4()), name=req.name.strip(), role=role, department=req.department, embedding_status=EmbeddingStatus.indexed, embedding_count=1, enrolled_at=datetime.now(IST))
+    profile = Profile(
+        id=str(uuid.uuid4()),
+        name=req.name.strip(),
+        role=role,
+        department=req.department,
+        embedding_status=EmbeddingStatus.indexed,
+        embedding_count=1,
+        enrolled_at=datetime.now(IST)
+    )
     if not profile.name:
         raise HTTPException(status_code=422, detail="Profile name cannot be empty")
     db.add(profile)
@@ -161,7 +182,14 @@ def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegis
     if hasattr(emb_vec, "tolist"):
         emb_vec = emb_vec.tolist()
     db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=emb_vec))
-    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({"profile_id": profile.id, "status": DetectionStatus.recognized, "unregistered_subject_id": None})
+    # Flush so profile exists in PostgreSQL before updating detections with profile_id FK
+    db.flush()
+
+    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({
+        "profile_id": profile.id,
+        "status": DetectionStatus.recognized,
+        "unregistered_subject_id": None
+    })
     subject.status = "registered"
     db.commit()
     db.refresh(profile)
@@ -178,9 +206,24 @@ def assign_unregistered_subject(subject_id: str, req: UnregisteredSubjectAssignR
     profile = db.query(Profile).filter(Profile.id == target_profile_id).first()
     if not subject or not profile:
         raise HTTPException(status_code=404, detail="Unregistered subject or profile not found")
-    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({"profile_id": profile.id, "status": DetectionStatus.recognized, "unregistered_subject_id": None})
+    
+    # Also attach the representative embedding to the target profile
+    emb_vec = subject.representative_embedding
+    if hasattr(emb_vec, "tolist"):
+        emb_vec = emb_vec.tolist()
+    db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=emb_vec))
+    profile.embedding_count = (profile.embedding_count or 0) + 1
+    profile.embedding_status = EmbeddingStatus.indexed
+    db.flush()
+
+    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({
+        "profile_id": profile.id,
+        "status": DetectionStatus.recognized,
+        "unregistered_subject_id": None
+    })
     subject.status = "assigned"
     db.commit()
+    db.refresh(profile)
     return ProfileResponse.model_validate(profile)
 
 
@@ -211,6 +254,11 @@ def delete_unregistered_event(subject_id: str, event_id: str, db: Session = Depe
     ).first()
     if not detection:
         raise HTTPException(status_code=404, detail="Unregistered event not found")
+    
+    if detection.event_id:
+        db.query(EventProvenance).filter(EventProvenance.event_id == detection.event_id).delete(synchronize_session=False)
+        db.query(SequenceAcknowledgment).filter(SequenceAcknowledgment.last_synced_event_id == detection.event_id).update({"last_synced_event_id": None}, synchronize_session=False)
+
     db.query(Alert).filter(Alert.detection_id == detection.id).update({"detection_id": None})
     db.delete(detection)
     db.commit()
@@ -225,9 +273,18 @@ def delete_unregistered_subject(subject_id: str, db: Session = Depends(get_db)):
     subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
     if not subject:
         raise HTTPException(status_code=404, detail="Unregistered subject not found")
-    detection_ids = [d.id for d in db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).all()]
+    
+    detection_rows = db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).all()
+    detection_ids = [d.id for d in detection_rows]
+    event_ids = [d.event_id for d in detection_rows if d.event_id]
+
     if detection_ids:
         db.query(Alert).filter(Alert.detection_id.in_(detection_ids)).update({"detection_id": None}, synchronize_session=False)
+
+    if event_ids:
+        db.query(EventProvenance).filter(EventProvenance.event_id.in_(event_ids)).delete(synchronize_session=False)
+        db.query(SequenceAcknowledgment).filter(SequenceAcknowledgment.last_synced_event_id.in_(event_ids)).update({"last_synced_event_id": None}, synchronize_session=False)
+
     db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).delete(synchronize_session=False)
     db.delete(subject)
     db.commit()

@@ -3,6 +3,7 @@ import uuid
 from typing import Optional, Tuple, Any, Dict
 from sqlalchemy.orm import Session
 
+from config import IST, to_ist_iso
 from models import (
     Profile, Detection, Camera,
     DetectionStatus as DetectionStatusEnum,
@@ -81,7 +82,7 @@ def build_face_log_payload(
         "id": detection.id,
         "camera_id": detection.camera_id,
         "camera_name": camera.name,
-        "timestamp": detection.timestamp.isoformat() + "Z",
+        "timestamp": to_ist_iso(detection.timestamp),
         "status": detection.status.value,
         "confidence": detection.confidence,
         "liveness_score": detection.liveness_score,
@@ -93,6 +94,7 @@ def build_face_log_payload(
         "wearing_mask": detection.wearing_mask,
         "wearing_glasses": detection.wearing_glasses,
         "snapshot_tone": snapshot_tone_for(detection.id),
+        "face_image": detection.face_image,
     }
 
 async def extract_face_embedding(file: Any) -> Optional[Any]:

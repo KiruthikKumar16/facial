@@ -1,6 +1,6 @@
 
 from fastapi import APIRouter, File, UploadFile, Form, Depends, Query, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, extract, text, case, select, or_
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
@@ -18,7 +18,7 @@ from schemas import (
     FootfallBucketResponse, DemographicSliceResponse,
     AttendanceRecordFullResponse
 )
-from config import IST
+from config import IST, to_ist, to_ist_iso
 from utils import snapshot_tone_for
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
@@ -48,7 +48,7 @@ def get_movement_network(hours: int = Query(24), db: Session = Depends(get_db)):
         toCameraId=row.to_camera_id,
         toCameraName=cameras.get(row.to_camera_id).name if cameras.get(row.to_camera_id) else row.to_camera_id,
         count=int(row.count),
-        lastSeen=row.last_seen,
+        lastSeen=to_ist(row.last_seen),
         averageTravelSeconds=round(float(row.average_travel_seconds), 1),
     ) for row in rows])
 
@@ -157,7 +157,9 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
         
-    detections = db.query(Detection).filter(
+    detections = db.query(Detection).options(
+        joinedload(Detection.camera)
+    ).filter(
         Detection.profile_id == profileId,
         Detection.timestamp >= start_time
     ).order_by(Detection.timestamp.asc()).all()
@@ -168,7 +170,7 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
             cameraId=d.camera_id,
             cameraName=d.camera.name if d.camera else "Unknown",
             zone=d.camera.zone if d.camera else "General",
-            timestamp=d.timestamp,
+            timestamp=to_ist(d.timestamp),
             confidence=d.confidence,
             snapshotTone=snapshot_tone_for(d.id),
         ))
@@ -361,8 +363,8 @@ def get_attendance(
                 profileName=p.name,
                 role=p.role.value if hasattr(p.role, 'value') else str(p.role or "visitor"),
                 department=p.department,
-                checkIn=row.check_in,
-                checkOut=row.check_out,
+                checkIn=to_ist(row.check_in),
+                checkOut=to_ist(row.check_out),
                 totalSightings=int(row.total_sightings or 0),
                 avatarTone=snapshot_tone_for(p.id),
             ))
@@ -373,8 +375,8 @@ def get_attendance(
                 profileName=u.display_name,
                 role="unknown",
                 department=None,
-                checkIn=row.check_in,
-                checkOut=row.check_out,
+                checkIn=to_ist(row.check_in),
+                checkOut=to_ist(row.check_out),
                 totalSightings=int(row.total_sightings or 0),
                 avatarTone="gray",
             ))

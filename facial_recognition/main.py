@@ -11,6 +11,8 @@ if _workspace_root not in sys.path:
     sys.path.insert(0, _workspace_root)
 
 from facial_recognition.main_cpu import CpuCameraPipeline, build_sources, load_config
+CameraPipeline = CpuCameraPipeline
+build_camera_sources = build_sources
 from facial_recognition.cli import parse_run_args, resolve_det_size, resolve_model, resolve_camera_size
 from facial_recognition.detector import InsightFaceDetector
 from facial_recognition.recognizer import Recognizer
@@ -58,7 +60,13 @@ def main():
     lock_resolution = bool(
         options.max_quality or options.det_width is not None or options.det_height is not None
     )
-    use_gpu = bool(cfg.get('use_gpu', False))
+    env_gpu = os.environ.get('USE_GPU', '').strip().lower()
+    if env_gpu in ('true', '1', 'yes'):
+        use_gpu = True
+    elif env_gpu in ('false', '0', 'no'):
+        use_gpu = False
+    else:
+        use_gpu = bool(cfg.get('use_gpu', False))
     fast_detector = bool(cfg.get('cpu_use_fast_detector', False))  # Usually false for GPU
     detector_model = resolve_model(options, str(cfg.get('cpu_detector_model', 'buffalo_s')))
     cam_w, cam_h = resolve_camera_size(
@@ -164,8 +172,19 @@ def main():
     signal.signal(signal.SIGINT, handle)
     signal.signal(signal.SIGTERM, handle)
 
-    for p in pipelines:
-        cv2.namedWindow(p.camera_id, cv2.WINDOW_NORMAL)
+    headless = (
+        os.environ.get("HEADLESS", "").strip().lower() in ("true", "1", "yes")
+        or not bool(os.environ.get("DISPLAY"))
+    )
+
+    if not headless:
+        for p in pipelines:
+            try:
+                cv2.namedWindow(p.camera_id, cv2.WINDOW_NORMAL)
+            except Exception as e:
+                logger.warning("Could not open window for '%s': %s. Switching to headless mode.", p.camera_id, e)
+                headless = True
+                break
 
     frame_publishers = [
         EdgeFramePublisher(pipeline.camera_id, lambda pipeline=pipeline: pipeline.latest_frame)
@@ -178,19 +197,28 @@ def main():
         while not stop_event.is_set():
             for p in pipelines:
                 f = p.step()
-                if f is not None:
-                    cv2.imshow(p.camera_id, f)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                if not headless and f is not None:
+                    try:
+                        cv2.imshow(p.camera_id, f)
+                    except Exception as e:
+                        logger.warning("cv2.imshow failed for '%s': %s. Switching to headless mode.", p.camera_id, e)
+                        headless = True
+            if not headless:
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
             # small sleep to let OS schedule
-            time.sleep(0.001)
+            time.sleep(0.002)
     finally:
         for publisher in frame_publishers:
             publisher.stop()
         for p in pipelines:
             p.stop()
         det_logger.close()
-        cv2.destroyAllWindows()
+        if not headless:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     main()

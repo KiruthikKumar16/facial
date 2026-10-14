@@ -8,7 +8,6 @@
 #    - facial_recognition/event_ledger.py
 #    - facial_recognition/logger.py (updated)
 #    - facial_recognition/test_event_ledger.py
-#    - facial_recognition/migrate_csv_to_ledger.py
 
 # 2. Verify syntax (optional)
 python -m py_compile facial_recognition/event_ledger.py

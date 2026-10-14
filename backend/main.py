@@ -180,6 +180,10 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager."""
     # Startup
     Base.metadata.create_all(bind=engine)
+    try:
+        ensure_detection_event_id_column()
+    except Exception as e:
+        logger.warning(f"Could not verify schema upgrade columns: {e}")
     logger.info("Database initialized")
     
     should_load_ai = (
@@ -190,9 +194,30 @@ async def lifespan(app: FastAPI):
     if should_load_ai:
         logger.info("Loading AI Models via facial_recognition module...")
         try:
-            detector = InsightFaceDetector(use_gpu=False, det_size=(320, 320), fast_detector=False, model_name='buffalo_s')
+            use_gpu = os.environ.get("USE_GPU", "false").lower() in ("true", "1", "yes")
+            if not use_gpu:
+                try:
+                    import torch
+                    use_gpu = torch.cuda.is_available()
+                except ImportError:
+                    pass
+            detector = InsightFaceDetector(use_gpu=use_gpu, det_size=(320, 320), fast_detector=False, model_name='buffalo_s')
             ai_models['detector'] = detector
-            logger.info("AI Models Loaded")
+            logger.info("AI Models Loaded (GPU: %s)", use_gpu)
+
+            # Pre-load recognizer for remote /detect and forensic features
+            if Recognizer is not None and "recognizer" not in ai_models:
+                try:
+                    cfg = _load_recognition_config()
+                    root = Path(__file__).resolve().parent.parent / "facial_recognition"
+                    gallery_path = str(root / cfg.get("gallery_path", "known_faces/gallery.npz"))
+                    if os.path.exists(gallery_path):
+                        ai_models["recognizer"] = Recognizer(
+                            gallery_path=gallery_path,
+                            threshold=float(cfg.get("similarity_threshold", 0.35))
+                        )
+                except Exception as ex:
+                    logger.debug("Could not pre-load recognizer: %s", ex)
 
             # Embedded camera pipelines are opt-in; the normal local workflow
             # runs the edge process separately from the API.
@@ -276,6 +301,9 @@ app.include_router(cameras_router)
 from routers.profiles import router as profiles_router
 app.include_router(profiles_router)
 
+from routers.video_audit import router as video_audit_router
+app.include_router(video_audit_router)
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -289,17 +317,84 @@ from middleware import JWTMiddleware
 app.add_middleware(JWTMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CORS middleware
+# CORS middleware with wildcard subdomain support (e.g. https://*.vercel.app, https://*.jarvislabs.run)
+_exact_origins = []
+_regex_patterns = []
+
+for _origin in settings.cors_origins:
+    if "*" in _origin:
+        import re
+        _pattern = "^" + re.escape(_origin).replace(r"\*", ".*") + "$"
+        _regex_patterns.append(_pattern)
+    else:
+        _exact_origins.append(_origin)
+
+_combined_origin_regex = "|".join(_regex_patterns) if _regex_patterns else None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=_exact_origins,
+    allow_origin_regex=_combined_origin_regex,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 
 from dependencies import verify_edge_node
+
+
+@app.post("/detect")
+async def detect_frame(
+    file: UploadFile = File(...),
+):
+    """
+    Remote face detection endpoint for pc_frame_sender.py and RemoteInsightFaceDetector.
+    Accepts multipart/form-data frame and runs GPU/CPU detection + embedding extraction.
+    """
+    detector = ai_models.get("detector")
+    if detector is None:
+        raise HTTPException(status_code=503, detail="AI detector not loaded on this backend instance")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty frame payload")
+
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Failed to decode image frame")
+
+    results = detector.detect(img)
+    recognizer = ai_models.get("recognizer")
+
+    detections = []
+    for face in results:
+        emb = detector.extract_embedding(img, face)
+        identity = "Unknown"
+        conf = float(face.get("det_score", 1.0))
+        status = "unknown"
+
+        if emb is not None and recognizer is not None:
+            match_name, match_score = recognizer.recognize(emb)
+            if match_name and match_score >= recognizer.threshold:
+                identity = match_name
+                conf = float(match_score)
+                status = "recognized"
+
+        det_data = {
+            "bbox": [int(v) for v in face.get("bbox", [0, 0, 0, 0])],
+            "confidence": conf,
+            "identity": identity,
+            "status": status,
+            "gender": face.get("gender"),
+            "age": face.get("age"),
+        }
+        if emb is not None:
+            det_data["embedding"] = emb.tolist()
+        detections.append(det_data)
+
+    return {"detections": detections, "count": len(detections)}
 
 
 @app.post("/api/internal/notify_update")
@@ -469,23 +564,31 @@ node_health_store: Dict[str, Dict[str, Any]] = {}
 
 # ==================== Video Streaming Endpoints ====================
 
+def _make_camera_placeholder(text: str = "Connecting to camera feed...") -> bytes:
+    """Generate a sleek dark-slate placeholder JPEG with status text."""
+    img = np.full((240, 320, 3), (28, 22, 18), dtype=np.uint8)  # dark slate BGR
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.42
+    thickness = 1
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+    cx = max(10, (320 - tw) // 2)
+    cy = max(20, (240 + th) // 2)
+    cv2.putText(img, text, (cx, cy), font, scale, (148, 163, 184), thickness, cv2.LINE_AA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 65])
+    return buf.tobytes() if ok else b""
+
 async def _mjpeg_frame_generator(camera_id: str):
     """
     Async generator that yields MJPEG boundary chunks for a given camera.
 
     Priority:
       1. Frame store — JPEG bytes pushed by the remote edge node via
-         /ws/video/push/{camera_id}.  This is the path used on Render.
-      2. Local CameraPipeline — when the backend is running locally with
-         the pipeline in-process (non-Render dev mode).
-      3. Black placeholder — keeps the <img> alive when nothing is streaming.
+         /ws/video/push/{camera_id} or POST /api/internal/cameras/{camera_id}/frame.
+      2. Local CameraPipeline — when running locally with pipeline in-process.
+      3. Informative placeholder — keeps the <img> alive with clear status text.
     """
     BOUNDARY = b"--frame"
-    BLANK = cv2.imencode(
-        ".jpg",
-        np.zeros((240, 320, 3), dtype=np.uint8),
-        [cv2.IMWRITE_JPEG_QUALITY, 50],
-    )[1].tobytes()
+    BLANK = _make_camera_placeholder(f"Camera [{camera_id}]: Offline / Waiting")
 
     while True:
         # --- 1. Remote push via frame store (Render / cloud) ---
@@ -570,10 +673,13 @@ async def stream_snapshot(camera_id: str):
     pipeline = camera_pipelines.get(camera_id)
     frame = pipeline.get_frame() if pipeline is not None else None
     if frame is None:
-        blank = np.zeros((240, 320, 3), dtype=np.uint8)
-        ok, buf = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    else:
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        jpeg_bytes = _make_camera_placeholder(f"Camera [{camera_id}]: Offline")
+        return StreamingResponse(
+            iter([jpeg_bytes]),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-cache"},
+        )
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     if not ok:
         raise HTTPException(status_code=500, detail="Frame encoding failed")
     return StreamingResponse(
@@ -710,98 +816,3 @@ async def websocket_kpis(websocket: WebSocket):
     except WebSocketDisconnect:
         await manager.disconnect("kpis", websocket)
 
-
-# ==================== Analytics & Forensic ====================
-
-def run_forensic_vector_query(
-    db: Session,
-    target_embedding: List[float],
-    threshold: float = 0.60,
-    date_from: Optional[datetime] = None,
-    date_to: Optional[datetime] = None,
-    camera_ids: Optional[List[str]] = None,
-    gender: Optional[str] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    wearing_mask: Optional[bool] = None,
-    wearing_glasses: Optional[bool] = None,
-) -> list[ForensicMatchResponse]:
-    """Search enrolled gallery embeddings and annotate matches from detection history."""
-    if len(target_embedding) != 512:
-        raise HTTPException(status_code=422, detail="Probe embedding must contain 512 values.")
-
-    max_distance = 1.0 - threshold
-    camera_filter = [camera_id.strip() for camera_id in (camera_ids or []) if camera_id.strip()]
-
-    detection_filters = []
-    if date_from is not None:
-        detection_filters.append(Detection.timestamp >= date_from)
-    if date_to is not None:
-        detection_filters.append(Detection.timestamp <= date_to)
-    if camera_filter:
-        detection_filters.append(Detection.camera_id.in_(camera_filter))
-    if gender and gender.lower() != "all":
-        detection_filters.append(Detection.gender == parse_gender(gender))
-    if age_min is not None:
-        detection_filters.append(Detection.age >= age_min)
-    if age_max is not None:
-        detection_filters.append(Detection.age <= age_max)
-    if wearing_mask is True:
-        detection_filters.append(Detection.wearing_mask.is_(True))
-    if wearing_glasses is True:
-        detection_filters.append(Detection.wearing_glasses.is_(True))
-
-    distance_expr = Embedding.vector.cosine_distance(target_embedding)
-    query = db.query(
-        Profile,
-        distance_expr.label("distance")
-    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
-        distance_expr <= max_distance
-    )
-
-    if detection_filters:
-        matching_profile_ids = select(Detection.profile_id).filter(
-            Detection.profile_id.isnot(None),
-            *detection_filters,
-        ).distinct()
-        query = query.filter(Profile.id.in_(matching_profile_ids))
-
-    results = query.order_by("distance").limit(25).all()
-
-    matches = []
-    seen = set()
-    for profile, distance in results:
-        if profile.id in seen:
-            continue
-        seen.add(profile.id)
-        latest_detection_query = db.query(Detection).filter(
-            Detection.profile_id == profile.id
-        )
-        if detection_filters:
-            latest_detection_query = latest_detection_query.filter(*detection_filters)
-        latest_detection = latest_detection_query.order_by(
-            Detection.timestamp.desc()
-        ).first()
-        matches.append(
-            ForensicMatchResponse(
-                profile_id=profile.id,
-                profile_name=profile.name,
-                role=profile.role.value if profile.role else None,
-                match_score=1.0 - float(distance),
-                embeddings_matched=profile.embedding_count,
-                last_seen=(
-                    latest_detection.timestamp
-                    if latest_detection
-                    else profile.last_seen
-                ),
-                camera_name=(
-                    latest_detection.camera.name
-                    if latest_detection and latest_detection.camera
-                    else None
-                ),
-                avatarTone=snapshot_tone_for(profile.id),
-            )
-        )
-        if len(matches) >= 10:
-            break
-    return matches

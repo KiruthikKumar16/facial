@@ -12,12 +12,14 @@ import { Scan } from 'lucide-react'
 export function FaceTile({
   tone,
   label,
+  image,
   size = 'md',
   className,
   flagged,
 }: {
   tone: string
   label?: string
+  image?: string | null
   size?: 'sm' | 'md' | 'lg' | 'xl'
   className?: string
   flagged?: boolean
@@ -28,6 +30,13 @@ export function FaceTile({
     lg: 'size-20 text-sm',
     xl: 'h-32 w-full text-base',
   }
+
+  const imageSrc = image
+    ? image.startsWith('data:')
+      ? image
+      : `data:image/jpeg;base64,${image}`
+    : null
+
   return (
     <div
       className={cn(
@@ -39,18 +48,29 @@ export function FaceTile({
       )}
       aria-hidden
     >
-      <div className="scanlines absolute inset-0 opacity-60" />
-      <span className="absolute left-1 top-1 size-1.5 border-l border-t border-foreground/50" />
-      <span className="absolute right-1 top-1 size-1.5 border-r border-t border-foreground/50" />
-      <span className="absolute bottom-1 left-1 size-1.5 border-b border-l border-foreground/50" />
-      <span className="absolute bottom-1 right-1 size-1.5 border-b border-r border-foreground/50" />
-      {label ? (
-        <span className="font-mono font-semibold tracking-wider text-foreground/90">
-          {label}
-        </span>
+      {imageSrc ? (
+        <img
+          src={imageSrc}
+          alt={label || 'Face crop'}
+          className="h-full w-full object-cover transition-transform duration-300 hover:scale-105"
+          loading="lazy"
+        />
       ) : (
-        <Scan className="size-1/3 text-foreground/50" />
+        <>
+          <div className="scanlines absolute inset-0 opacity-60" />
+          {label ? (
+            <span className="font-mono font-semibold tracking-wider text-foreground/90">
+              {label}
+            </span>
+          ) : (
+            <Scan className="size-1/3 text-foreground/50" />
+          )}
+        </>
       )}
+      <span className="pointer-events-none absolute left-1 top-1 size-1.5 border-l border-t border-foreground/50" />
+      <span className="pointer-events-none absolute right-1 top-1 size-1.5 border-r border-t border-foreground/50" />
+      <span className="pointer-events-none absolute bottom-1 left-1 size-1.5 border-b border-l border-foreground/50" />
+      <span className="pointer-events-none absolute bottom-1 right-1 size-1.5 border-b border-r border-foreground/50" />
     </div>
   )
 }

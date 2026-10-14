@@ -1,0 +1,113 @@
+"""Tests for CCTV Video Audit & Standalone Batch Ingestion."""
+
+import os
+import tempfile
+from pathlib import Path
+import cv2
+import numpy as np
+import pytest
+from starlette.testclient import TestClient
+
+from main import app
+from auth import create_access_token
+from facial_recognition.video_auditor import VideoAuditor, format_seconds, extract_clip_start_time
+
+
+@pytest.fixture
+def client():
+    return TestClient(app)
+
+
+@pytest.fixture
+def auth_headers():
+    token = create_access_token({"sub": "admin"})
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def sample_video_dir():
+    """Create a temporary directory containing 2 synthetic test video clips with known timestamps."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        cam_dir = tmp_path / "Camera_01"
+        cam_dir.mkdir(parents=True, exist_ok=True)
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        
+        # Clip 1: 2026-10-10 10:00:00 (10 frames at 10 fps = 1.0 second duration, ends 10:00:01)
+        clip1_path = cam_dir / "CAM01_2026-10-10_10-00-00.mp4"
+        out1 = cv2.VideoWriter(str(clip1_path), fourcc, 10.0, (160, 120))
+        for _ in range(10):
+            frame = np.zeros((120, 160, 3), dtype=np.uint8)
+            out1.write(frame)
+        out1.release()
+
+        # Clip 2: 2026-10-10 10:00:15 (starts at 10:00:15 => gap of 14 seconds between 10:00:01 and 10:00:15)
+        clip2_path = cam_dir / "CAM01_2026-10-10_10-00-15.mp4"
+        out2 = cv2.VideoWriter(str(clip2_path), fourcc, 10.0, (160, 120))
+        for _ in range(10):
+            frame = np.zeros((120, 160, 3), dtype=np.uint8)
+            out2.write(frame)
+        out2.release()
+
+        yield tmpdir
+
+
+def test_format_seconds():
+    assert format_seconds(45) == "45s"
+    assert format_seconds(125) == "2m 5s"
+    assert format_seconds(3665) == "1h 1m 5s"
+
+
+def test_video_auditor_gap_detection(sample_video_dir):
+    auditor = VideoAuditor(tolerance_seconds=3.0)
+    report = auditor.scan_directory(sample_video_dir)
+
+    assert report.total_files_scanned == 2
+    assert report.total_cameras == 1
+    assert len(report.clips) == 2
+    assert len(report.gaps) == 1
+
+    gap = report.gaps[0]
+    assert gap.camera_id == "Camera_01"
+    assert gap.gap_duration_seconds >= 13.0
+    assert gap.severity in ("SUSPICIOUS_CUT", "BUFFER_HITCH", "CRITICAL_BLACKOUT")
+    assert report.security_verdict in ("SECURITY_WARNING_TIMELINE_GAPS", "HIGH_SECURITY_ALERT_MISSING_FOOTAGE")
+
+
+def test_api_scan_cctv_footage(client, auth_headers, sample_video_dir):
+    res = client.post(
+        "/api/video-audit/scan",
+        json={"directory": sample_video_dir, "tolerance_seconds": 3.0, "compute_hashes": True},
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_files_scanned"] == 2
+    assert data["total_gaps_detected"] == 1
+    assert "Camera_01" in [c["camera_id"] for c in data["cameras_summary"]]
+
+    # Fetch latest report endpoint
+    rep_res = client.get("/api/video-audit/latest-report", headers=auth_headers)
+    assert rep_res.status_code == 200
+    assert rep_res.json()["total_files_scanned"] == 2
+
+
+def test_api_scan_nonexistent_directory(client, auth_headers):
+    res = client.post(
+        "/api/video-audit/scan",
+        json={"directory": "Z:/NonExistentDrive/Footage", "tolerance_seconds": 5.0},
+        headers=auth_headers,
+    )
+    assert res.status_code == 404
+
+
+def test_api_ingest_status_and_stop(client, auth_headers):
+    res = client.get("/api/video-audit/status", headers=auth_headers)
+    assert res.status_code == 200
+    status = res.json()
+    assert "running" in status
+    assert "progress_percent" in status
+
+    stop_res = client.post("/api/video-audit/stop", headers=auth_headers)
+    assert stop_res.status_code == 200

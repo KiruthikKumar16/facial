@@ -3,12 +3,29 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Indian Standard Time (IST) timezone - UTC+5:30
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def to_ist(dt: Optional[datetime]) -> Optional[datetime]:
+    """Convert any datetime (naive UTC from PostgreSQL or aware) to IST."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        # PostgreSQL TIMESTAMP WITHOUT TIME ZONE stores naive UTC
+        return dt.replace(tzinfo=timezone.utc).astimezone(IST)
+    return dt.astimezone(IST)
+
+
+def to_ist_iso(dt: Optional[datetime]) -> str:
+    """Convert any datetime to an ISO-8601 string in IST (+05:30)."""
+    ist_dt = to_ist(dt)
+    return ist_dt.isoformat() if ist_dt is not None else ""
 
 
 def _find_root_env() -> Path | None:
@@ -84,6 +101,10 @@ def _parse_bool(v: str, default: bool = False) -> bool:
 def _parse_int(v: str, default: int) -> int:
     if not v:
         return default
+    try:
+        return int(v)
+    except Exception:
+        return default
 
 
 def _parse_float(v: str, default: float) -> float:
@@ -91,10 +112,6 @@ def _parse_float(v: str, default: float) -> float:
         return default
     try:
         return float(v)
-    except Exception:
-        return default
-    try:
-        return int(v)
     except Exception:
         return default
 

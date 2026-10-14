@@ -84,7 +84,9 @@ export const FaceLogSchema = z.object({
   wearing_glasses: z.boolean().optional(),
   wearingGlasses: z.boolean().optional(),
   snapshot_tone: z.string().optional(),
-  snapshotTone: z.string().optional()
+  snapshotTone: z.string().optional(),
+  face_image: z.string().nullable().optional(),
+  faceImage: z.string().nullable().optional()
 }).transform(raw => ({
   id: raw.id,
   cameraId: raw.camera_id ?? raw.cameraId ?? '',
@@ -100,7 +102,8 @@ export const FaceLogSchema = z.object({
   gender: raw.gender,
   wearingMask: raw.wearing_mask ?? raw.wearingMask ?? false,
   wearingGlasses: raw.wearing_glasses ?? raw.wearingGlasses ?? false,
-  snapshotTone: raw.snapshot_tone ?? raw.snapshotTone ?? AVATAR_TONES[hashString(raw.id) % AVATAR_TONES.length]
+  snapshotTone: raw.snapshot_tone ?? raw.snapshotTone ?? AVATAR_TONES[hashString(raw.id) % AVATAR_TONES.length],
+  faceImage: raw.face_image ?? raw.faceImage ?? null
 }));
 
 export const AlertSchema = z.object({
@@ -193,7 +196,9 @@ export const UnregisteredSubjectSchema = z.object({
   vectorDimension: z.number().optional(),
   event_ids: z.array(z.string()).optional(),
   eventIds: z.array(z.string()).optional(),
-  status: strOrEmpty
+  status: strOrEmpty,
+  thumbnail: z.string().nullable().optional(),
+  face_image: z.string().nullable().optional()
 }).transform(raw => ({
   id: raw.id,
   displayName: raw.display_name ?? raw.displayName ?? '',
@@ -205,7 +210,8 @@ export const UnregisteredSubjectSchema = z.object({
   representativeFingerprint: raw.representative_fingerprint ?? raw.representativeFingerprint ?? '',
   vectorDimension: raw.vector_dimension ?? raw.vectorDimension ?? 0,
   eventIds: raw.event_ids ?? raw.eventIds ?? [],
-  status: raw.status
+  status: raw.status,
+  thumbnail: raw.thumbnail ?? raw.face_image ?? null
 }));
 
 export const DuplicateCandidateSchema = z.object({

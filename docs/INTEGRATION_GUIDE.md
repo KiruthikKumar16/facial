@@ -45,10 +45,6 @@ FILE MODIFICATIONS
      * Unit tests (70+ test cases)
      * Recovery scenarios
      * Migration tests
-   
-   - facial_recognition/migrate_csv_to_ledger.py
-     * Standalone migration tool
-     * Backup and verification
 
 ===========================================================================
 ARCHITECTURE: EVENT LIFECYCLE
