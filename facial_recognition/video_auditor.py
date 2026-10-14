@@ -228,16 +228,39 @@ class VideoAuditor:
         self.min_clip_ratio = min_clip_duration_threshold_ratio
         self.compute_full_hashes = compute_full_hashes
 
-    def scan_directory(self, root_dir: str | Path) -> VideoAuditReport:
+    def scan_directory(self, root_dir: str | Path, max_files: int = 10_000) -> VideoAuditReport:
         """Recursively scan directory of CCTV footage and perform security timeline audit."""
         root = Path(root_dir).resolve()
         if not root.exists():
             raise FileNotFoundError(f"Footage directory not found: {root}")
+        if not root.is_dir():
+            raise NotADirectoryError(f"Target path is not a directory: {root}. Use scan_file() for single clips.")
 
         video_files: List[Path] = []
         for ext in VIDEO_EXTENSIONS:
-            video_files.extend(root.rglob(f"*{ext}"))
-            video_files.extend(root.rglob(f"*{ext.upper()}"))
+            for p in root.rglob(f"*{ext}"):
+                try:
+                    p.resolve().relative_to(root)
+                    video_files.append(p)
+                except ValueError:
+                    logger.warning("Skipping symlink escaping footage root: %s", p)
+                if len(video_files) >= max_files:
+                    logger.warning("Reached maximum scan limit of %d files in %s", max_files, root)
+                    break
+            if len(video_files) >= max_files:
+                break
+
+            for p in root.rglob(f"*{ext.upper()}"):
+                try:
+                    p.resolve().relative_to(root)
+                    video_files.append(p)
+                except ValueError:
+                    logger.warning("Skipping symlink escaping footage root: %s", p)
+                if len(video_files) >= max_files:
+                    logger.warning("Reached maximum scan limit of %d files in %s", max_files, root)
+                    break
+            if len(video_files) >= max_files:
+                break
 
         # Deduplicate paths
         video_files = sorted(list(set(video_files)))
@@ -428,6 +451,59 @@ class VideoAuditor:
         )
 
         return report
+
+    def scan_file(self, file_path: str | Path) -> VideoAuditReport:
+        """Perform security and integrity audit on a single video clip."""
+        vpath = Path(file_path).resolve()
+        if not vpath.exists():
+            raise FileNotFoundError(f"Video file not found: {vpath}")
+        if not vpath.is_file():
+            raise ValueError(f"Path is not a file: {vpath}")
+
+        meta = self._analyze_single_clip(vpath, vpath.parent)
+        clips = [meta] if meta else []
+        cam_id = meta.camera_id if meta else "camera-1"
+        dur = meta.duration_seconds if meta else 0.0
+
+        is_tampered = bool(meta and meta.is_abnormally_short)
+        cam_verdict = "SUSPICIOUS_TRIMS" if is_tampered else "SECURE"
+        sec_verdict = "WARNING_SUSPICIOUS_CLIPS_DETECTED" if is_tampered else "SECURE_100_PERCENT_CONTINUOUS"
+        if not clips:
+            sec_verdict = "NO_FOOTAGE_FOUND"
+
+        cam_summary = CameraContinuitySummary(
+            camera_id=cam_id,
+            total_clips=len(clips),
+            total_footage_seconds=round(dur, 2),
+            formatted_footage_duration=format_seconds(dur),
+            earliest_timestamp=meta.start_time if meta else "",
+            latest_timestamp=meta.end_time if meta else "",
+            timeline_span_seconds=round(dur, 2),
+            formatted_span_duration=format_seconds(dur),
+            total_gap_seconds=0.0,
+            formatted_gap_duration="0s",
+            gap_count=0,
+            continuity_percentage=100.0 if clips else 0.0,
+            tamper_verdict=cam_verdict,
+        )
+
+        return VideoAuditReport(
+            scan_timestamp=datetime.datetime.now().isoformat(),
+            root_directory=str(vpath.parent),
+            total_files_scanned=len(clips),
+            total_cameras=1 if clips else 0,
+            overall_continuity_percentage=100.0 if (clips and not is_tampered) else 0.0,
+            security_verdict=sec_verdict,
+            total_footage_duration_seconds=round(dur, 2),
+            formatted_total_footage=format_seconds(dur),
+            total_missing_gap_seconds=0.0,
+            formatted_total_missing="0s",
+            total_gaps_detected=0,
+            total_abnormal_trims=1 if is_tampered else 0,
+            cameras_summary=[cam_summary] if clips else [],
+            gaps=[],
+            clips=clips,
+        )
 
     def _analyze_single_clip(self, vpath: Path, root: Path) -> Optional[VideoClipMetadata]:
         """Inspect a video file using OpenCV and filesystem metadata."""
@@ -630,15 +706,23 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Sentinel CCTV Security & Continuity Auditor")
-    parser.add_argument("--dir", required=True, help="Path to CCTV video folder or drive")
+    parser.add_argument("--dir", help="Path to CCTV video folder or drive")
+    parser.add_argument("--file", help="Path to a single CCTV video file to audit")
     parser.add_argument("--tolerance", type=float, default=5.0, help="Allowable gap in seconds before flagging (default: 5.0)")
     parser.add_argument("--output", default="cctv_audit_report.md", help="Output Markdown report path")
     parser.add_argument("--json", default="cctv_audit_report.json", help="Output JSON report path")
     args = parser.parse_args()
 
+    if not args.dir and not args.file:
+        parser.error("Either --dir or --file must be specified.")
+
     auditor = VideoAuditor(tolerance_seconds=args.tolerance)
-    print(f"[*] Scanning footage in: {args.dir}...")
-    report_data = auditor.scan_directory(args.dir)
+    if args.file:
+        print(f"[*] Auditing single video file: {args.file}...")
+        report_data = auditor.scan_file(args.file)
+    else:
+        print(f"[*] Scanning footage in: {args.dir}...")
+        report_data = auditor.scan_directory(args.dir)
 
     md_content = generate_markdown_report(report_data)
     with open(args.output, "w", encoding="utf-8") as f:

@@ -183,3 +183,49 @@ def test_video_auditor_timeline_overlap_collision():
         assert report.security_verdict == "HIGH_SECURITY_ALERT_TIMELINE_COLLISION"
 
 
+def test_video_auditor_scan_file(sample_video_dir):
+    """Verify single-file audit method inspects a single clip accurately."""
+    sample_files = list(Path(sample_video_dir).rglob("*.mp4"))
+    assert len(sample_files) >= 1
+    target_file = sample_files[0]
+
+    auditor = VideoAuditor(tolerance_seconds=3.0)
+    report = auditor.scan_file(target_file)
+
+    assert report.total_files_scanned == 1
+    assert report.total_cameras == 1
+    assert len(report.clips) == 1
+    assert report.total_footage_duration_seconds > 0.0
+    assert report.security_verdict in ("SECURE_100_PERCENT_CONTINUOUS", "WARNING_SUSPICIOUS_CLIPS_DETECTED")
+
+
+def test_api_scan_root_drive_blocked(client, auth_headers):
+    """Verify API prevents DoS by blocking raw drive root scans."""
+    for root_candidate in ("C:\\", "D:\\", "C:"):
+        res = client.post(
+            "/api/video-audit/scan",
+            json={"directory": root_candidate, "tolerance_seconds": 5.0},
+            headers=auth_headers,
+        )
+        assert res.status_code == 400
+        assert "restricted" in res.json()["detail"].lower()
+
+
+def test_api_scan_single_file(client, auth_headers, sample_video_dir):
+    """Verify API correctly processes a single video file path."""
+    sample_files = list(Path(sample_video_dir).rglob("*.mp4"))
+    assert len(sample_files) >= 1
+    target_file = str(sample_files[0])
+
+    res = client.post(
+        "/api/video-audit/scan",
+        json={"directory": target_file, "tolerance_seconds": 3.0},
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_files_scanned"] == 1
+    assert data["total_cameras"] == 1
+
+
+
