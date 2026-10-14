@@ -8,6 +8,7 @@ sys.path.insert(0, str(backend_dir.parent))
 
 from fastapi.testclient import TestClient
 from main import app
+from auth import create_access_token
 
 client = TestClient(app)
 
@@ -69,3 +70,38 @@ def test_detect_endpoint_empty_payload():
     """Verify that /detect rejects empty payload appropriately."""
     response = client.post("/detect", files={})
     assert response.status_code == 422  # validation error for missing required file
+
+
+def test_analytics_footfall_with_date_range():
+    """Verify /api/analytics/footfall does not crash with UnboundLocalError when date_from/date_to are provided."""
+    token = create_access_token({"sub": "admin"})
+    response = client.get(
+        "/api/analytics/footfall?date_from=2026-10-14T00:00:00Z&date_to=2026-10-14T23:59:59Z",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 24
+    assert all("hour" in b and "detections" in b for b in data)
+
+
+def test_analytics_gender_distribution_with_date_range():
+    """Verify /api/analytics/gender-distribution returns valid demographic slices with date filter."""
+    token = create_access_token({"sub": "admin"})
+    response = client.get(
+        "/api/analytics/gender-distribution?date_from=2026-10-14T00:00:00Z&date_to=2026-10-14T23:59:59Z",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+
+
+def test_analytics_attendance_with_date_range():
+    """Verify /api/analytics/attendance returns valid records with date filter."""
+    token = create_access_token({"sub": "admin"})
+    response = client.get(
+        "/api/analytics/attendance?date_from=2026-10-14T00:00:00Z&date_to=2026-10-14T23:59:59Z",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)

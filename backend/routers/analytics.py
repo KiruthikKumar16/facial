@@ -183,6 +183,17 @@ def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Sess
     )
 
 
+def _normalize_datetime_filter(dt: Any) -> Optional[datetime]:
+    """Convert input datetime to naive UTC timestamp for database comparison."""
+    if dt is None:
+        return None
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 @router.get("/footfall", response_model=list[FootfallBucketResponse])
 def get_footfall(
     days: int = Query(7, description="Number of days to look back from today (used if date_from/date_to not provided)"),
@@ -190,24 +201,25 @@ def get_footfall(
     date_to: Optional[datetime] = Query(None, description="End date (inclusive) in IST"),
     db: Session = Depends(get_db)
 ):
-    # Determine the time range to filter by
-    if date_from is not None or date_to is not None:
-        # Use explicit date range if provided, convert aware UTC to naive UTC for DB
-        if date_from is not None:
-            start_time = date_from.astimezone(timezone.utc).replace(tzinfo=None)
-        else:
-            # If only date_to is provided, default to 7 days before date_to
-            start_time = date_to.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+    norm_from = _normalize_datetime_filter(date_from)
+    norm_to = _normalize_datetime_filter(date_to)
 
-        if date_to is not None:
-            end_time = date_to.astimezone(timezone.utc).replace(tzinfo=None)
+    # Determine the time range to filter by
+    if norm_from is not None or norm_to is not None:
+        if norm_from is not None:
+            start_time = norm_from
         else:
-            # If only date_from is provided, default to 7 days after date_from
-            end_time = date_from.astimezone(timezone.utc).replace(tzinfo=None) + timedelta(days=7)
+            start_time = norm_to - timedelta(days=7)
+
+        if norm_to is not None:
+            end_time = norm_to
+        else:
+            end_time = norm_from + timedelta(days=7)
     else:
-        # Fall back to original behavior for backward compatibility
-        start_time = datetime.now(IST) - timedelta(days=days)
-        end_time = datetime.now(IST)
+        # Fall back to default days (converted to naive UTC)
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        start_time = now_utc - timedelta(days=days)
+        end_time = now_utc
 
     detections = db.query(
         Detection.timestamp,
@@ -221,7 +233,6 @@ def get_footfall(
     for d in detections:
         # Ensure timestamp is treated as IST (database stores UTC)
         if d.timestamp.tzinfo is None:
-            from datetime import timezone
             ts = d.timestamp.replace(tzinfo=timezone.utc).astimezone(IST)
         else:
             ts = d.timestamp.astimezone(IST)
@@ -255,18 +266,24 @@ def get_age_distribution(
     date_to: Optional[datetime] = Query(None),
     db: Session = Depends(get_db)
 ):
-    # Use DISTINCT ON subject to guarantee each person is counted exactly once, even if age prediction varied
-    subject_id_col = func.coalesce(Detection.profile_id, Detection.unregistered_subject_id).label("subject_id")
+    norm_from = _normalize_datetime_filter(date_from)
+    norm_to = _normalize_datetime_filter(date_to)
+
+    subject_id_col = func.coalesce(
+        Detection.profile_id,
+        Detection.unregistered_subject_id,
+        func.concat('unk_', Detection.id)
+    ).label("subject_id")
+
     subq = db.query(subject_id_col, Detection.age).filter(
-        or_(Detection.profile_id != None, Detection.unregistered_subject_id != None),
         Detection.age != None
     )
-    if date_from:
-        subq = subq.filter(Detection.timestamp >= date_from.replace(tzinfo=None))
-    if date_to:
-        subq = subq.filter(Detection.timestamp <= date_to.replace(tzinfo=None))
+    if norm_from:
+        subq = subq.filter(Detection.timestamp >= norm_from)
+    if norm_to:
+        subq = subq.filter(Detection.timestamp <= norm_to)
     
-    subq = subq.distinct(func.coalesce(Detection.profile_id, Detection.unregistered_subject_id)).subquery()
+    subq = subq.distinct(subject_id_col).subquery()
 
     results = db.query(subq.c.age, func.count(subq.c.subject_id)).group_by(subq.c.age).all()
     
@@ -288,18 +305,24 @@ def get_gender_distribution(
     date_to: Optional[datetime] = Query(None),
     db: Session = Depends(get_db)
 ):
-    # Use DISTINCT ON subject to guarantee each person is counted exactly once, even if gender prediction varied
-    subject_id_col = func.coalesce(Detection.profile_id, Detection.unregistered_subject_id).label("subject_id")
+    norm_from = _normalize_datetime_filter(date_from)
+    norm_to = _normalize_datetime_filter(date_to)
+
+    subject_id_col = func.coalesce(
+        Detection.profile_id,
+        Detection.unregistered_subject_id,
+        func.concat('unk_', Detection.id)
+    ).label("subject_id")
+
     subq = db.query(subject_id_col, Detection.gender).filter(
-        or_(Detection.profile_id != None, Detection.unregistered_subject_id != None),
         Detection.gender != None
     )
-    if date_from:
-        subq = subq.filter(Detection.timestamp >= date_from.replace(tzinfo=None))
-    if date_to:
-        subq = subq.filter(Detection.timestamp <= date_to.replace(tzinfo=None))
+    if norm_from:
+        subq = subq.filter(Detection.timestamp >= norm_from)
+    if norm_to:
+        subq = subq.filter(Detection.timestamp <= norm_to)
     
-    subq = subq.distinct(func.coalesce(Detection.profile_id, Detection.unregistered_subject_id)).subquery()
+    subq = subq.distinct(subject_id_col).subquery()
 
     results = db.query(subq.c.gender, func.count(subq.c.subject_id)).group_by(subq.c.gender).all()
     slices = []
@@ -317,19 +340,22 @@ def get_attendance(
     date_to: Optional[datetime] = Query(None, description="End date (inclusive) in IST"),
     db: Session = Depends(get_db)
 ):
-    if date_from is not None or date_to is not None:
-        if date_from is not None:
-            start_time = date_from.replace(tzinfo=None)
+    norm_from = _normalize_datetime_filter(date_from)
+    norm_to = _normalize_datetime_filter(date_to)
+
+    if norm_from is not None or norm_to is not None:
+        if norm_from is not None:
+            start_time = norm_from
         else:
-            start_time = date_to.replace(tzinfo=None) - timedelta(days=7)
-        if date_to is not None:
-            end_time = date_to.replace(tzinfo=None)
+            start_time = norm_to - timedelta(days=7)
+        if norm_to is not None:
+            end_time = norm_to
         else:
-            end_time = date_from.replace(tzinfo=None) + timedelta(days=7)
-        end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+            end_time = norm_from + timedelta(days=7)
     else:
-        start_time = datetime.now(IST) - timedelta(days=days)
-        end_time = datetime.now(IST)
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        start_time = now_utc - timedelta(days=days)
+        end_time = now_utc
     
     results = db.query(
         Detection.profile_id,
