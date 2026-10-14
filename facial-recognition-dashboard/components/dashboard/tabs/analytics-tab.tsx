@@ -74,8 +74,8 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
         // Set to start of day (00:00:00) for date_from
         date_from = new Date(date_from.getFullYear(), date_from.getMonth(), date_from.getDate())
 
-        // Set to end of day (23:59:59.999999) for date_to
-        date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999999)
+        // Set to end of day (23:59:59.999) for date_to
+        date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999)
       }
       
       console.log('fetchFootfall params:', { date_from, date_to })
@@ -139,7 +139,7 @@ function FootfallChart({ selectedDates }: { selectedDates: Date[] }) {
                   }
                   return String(value).padStart(2, '0');
                 }}
-                // Ensure all ticks are shown (prevent auto-hiding)
+                interval={1}
                 tickCount={24}
                 tickLine={false}
                 axisLine={{ stroke: 'var(--border)' }}
@@ -200,7 +200,7 @@ function DateSelector({
   const startingDayIndex = firstDayOfMonth.getDay() // 0 for Sunday, 1 for Monday, etc.
   const daysInMonth = lastDayOfMonth.getDate()
 
-  // Generate days for the calendar grid (5 weeks * 7 days = 35 days)
+  // Generate days for the calendar grid (6 weeks * 7 days = 42 days)
   const days: (Date | null)[] = []
   // Add empty cells for the days before the first day of the month
   for (let i = 0; i < startingDayIndex; i++) {
@@ -210,8 +210,8 @@ function DateSelector({
   for (let day = 1; day <= daysInMonth; day++) {
     days.push(new Date(currentDate.getFullYear(), currentDate.getMonth(), day))
   }
-  // Fill the rest with null to complete 35 days (5 rows * 7 columns)
-  while (days.length < 35) {
+  // Fill the rest with null to complete 42 days (6 rows * 7 columns)
+  while (days.length < 42) {
     days.push(null)
   }
 
@@ -312,9 +312,8 @@ function DateSelector({
 
     const rect = gridElement.getBoundingClientRect()
     const cellWidth = rect.width / 7
-    const cellHeight = rect.height / 5
+    const cellHeight = rect.height / 6
 
-    // Adjust for the header row (first row is weekdays)
     const xInGrid = clientX - rect.left
     const yInGrid = clientY - rect.top
 
@@ -325,10 +324,10 @@ function DateSelector({
 
     // Calculate column and row (0-indexed)
     const col = Math.floor(xInGrid / cellWidth)
-    const row = Math.floor(yInGrid / cellHeight) - 1 // -1 to skip header row
+    const row = Math.floor(yInGrid / cellHeight)
 
-    // Skip if in header row or outside grid
-    if (row < 0 || row >= 5 || col < 0 || col >= 7) {
+    // Skip if outside grid bounds
+    if (row < 0 || row >= 6 || col < 0 || col >= 7) {
       return null
     }
 
@@ -415,7 +414,7 @@ function DateSelector({
       </div>
 
       <CardContent className="p-4">
-        <div className="h-56 w-full flex flex-col"
+        <div className="h-64 w-full flex flex-col"
           onPointerDown={handleDragStart}
           onPointerUp={handleDragEnd}
           onPointerLeave={handleDragEnd}
@@ -569,7 +568,7 @@ function AttendanceTable({ selectedDates }: { selectedDates: Date[] }) {
         date_to = sortedDates[sortedDates.length - 1]
 
         date_from = new Date(date_from.getFullYear(), date_from.getMonth(), date_from.getDate())
-        date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999999)
+        date_to = new Date(date_to.getFullYear(), date_to.getMonth(), date_to.getDate(), 23, 59, 59, 999)
       }
 
       return fetchAttendance(undefined, date_from, date_to)
