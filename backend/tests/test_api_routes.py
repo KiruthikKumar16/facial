@@ -105,3 +105,37 @@ def test_analytics_attendance_with_date_range():
     )
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+
+def test_detect_endpoint_requires_api_key():
+    """Verify that /detect enforces edge authentication."""
+    # Invalid key -> 403
+    response = client.post(
+        "/detect",
+        files={"file": ("frame.jpg", b"fake-jpeg-data", "image/jpeg")},
+        headers={"X-API-Key": "wrong-key"}
+    )
+    assert response.status_code == 403
+
+
+def test_create_profile_validation():
+    """Verify profile creation validates name and role, setting missing status when no photos."""
+    token = create_access_token({"sub": "admin"})
+    auth_header = {"Authorization": f"Bearer {token}"}
+
+    # Empty name -> 422
+    resp = client.post("/api/profiles", data={"name": "   ", "role": "visitor"}, headers=auth_header)
+    assert resp.status_code == 422
+
+    # Invalid role -> 422
+    resp = client.post("/api/profiles", data={"name": "Test Subject", "role": "invalid_superman"}, headers=auth_header)
+    assert resp.status_code == 422
+
+    # Valid profile without photo -> embedding_status is missing
+    resp = client.post("/api/profiles", data={"name": "Test Valid User", "role": "visitor"}, headers=auth_header)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "Test Valid User"
+    assert data["embedding_status"] == "missing"
+    assert data["embedding_count"] == 0
+

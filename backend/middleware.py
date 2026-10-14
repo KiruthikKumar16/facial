@@ -32,7 +32,12 @@ class JWTMiddleware(BaseHTTPMiddleware):
         # Edge node requests authenticated via X-API-Key (header or query param)
         api_key = request.headers.get("x-api-key") or request.query_params.get("api_key")
         expected_key = os.environ.get("EDGE_API_KEY", "default-dev-key")
-        if api_key and hmac.compare_digest(api_key, expected_key):
+        env = os.environ.get("ENVIRONMENT", "development").lower()
+        if (
+            api_key
+            and not (env in ("production", "prod") and (not expected_key or expected_key == "default-dev-key"))
+            and hmac.compare_digest(api_key, expected_key)
+        ):
             return await call_next(request)
 
         # Query token authentication for media/stream endpoints (e.g. <img> tags)

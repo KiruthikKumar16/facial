@@ -347,6 +347,7 @@ from dependencies import verify_edge_node
 @app.post("/detect")
 async def detect_frame(
     file: UploadFile = File(...),
+    api_key: str = Depends(verify_edge_node),
 ):
     """
     Remote face detection endpoint for pc_frame_sender.py and RemoteInsightFaceDetector.

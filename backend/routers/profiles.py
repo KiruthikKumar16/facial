@@ -43,12 +43,20 @@ async def create_profile(
     db: Session = Depends(get_db)
 ):
     """Enroll a new profile and extract face embeddings."""
+    if not name or not name.strip():
+        raise HTTPException(status_code=422, detail="Profile name cannot be empty")
+
+    try:
+        profile_role = ProfileRoleEnum(role) if role else ProfileRoleEnum.visitor
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid profile role")
+
     new_id = str(uuid.uuid4())
     profile = Profile(
         id=new_id,
-        name=name,
-        role=ProfileRoleEnum(role),
-        department=department,
+        name=name.strip(),
+        role=profile_role,
+        department=department.strip() if department else None,
         embedding_status=EmbeddingStatusEnum.pending,
         embedding_count=0,
         enrolled_at=datetime.now(IST)
@@ -71,9 +79,11 @@ async def create_profile(
                 db.add(db_emb)
                 profile.embedding_count += 1
         
-        if profile.embedding_count > 0:
-            profile.embedding_status = EmbeddingStatusEnum.indexed
-            db.commit()
+    if profile.embedding_count > 0:
+        profile.embedding_status = EmbeddingStatusEnum.indexed
+    else:
+        profile.embedding_status = EmbeddingStatusEnum.missing
+    db.commit()
             
     db.refresh(profile)
     return ProfileResponse.model_validate(profile)
