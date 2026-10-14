@@ -35,6 +35,24 @@ class FaceQualityAssessor:
             'min_occlusion_score': 0.35
         })
         self.temporal_observations_required = thresholds.get('temporal_observations_required', 5)
+        self._fas_session: Optional[Any] = None
+        self._init_deep_fas()
+
+    def _init_deep_fas(self) -> None:
+        """Attempt to load optional deep-learning ONNX Face Anti-Spoofing model if present."""
+        from pathlib import Path
+        model_candidates = [
+            Path(__file__).resolve().parent / "models" / "fas.onnx",
+            Path(__file__).resolve().parent.parent / "models" / "fas.onnx",
+        ]
+        for p in model_candidates:
+            if p.is_file():
+                try:
+                    import onnxruntime as ort
+                    self._fas_session = ort.InferenceSession(str(p), providers=['CPUExecutionProvider'])
+                    break
+                except Exception:
+                    self._fas_session = None
 
     def assess(
         self, 
@@ -225,6 +243,20 @@ class FaceQualityAssessor:
         """
         if bgr_crop is None or bgr_crop.size == 0 or bgr_crop.shape[0] < 10 or bgr_crop.shape[1] < 10:
             return 0.5
+
+        # Check deep-learning FAS model first if loaded
+        if self._fas_session is not None:
+            try:
+                input_meta = self._fas_session.get_inputs()[0]
+                _, in_c, in_h, in_w = input_meta.shape if len(input_meta.shape) == 4 else (1, 3, 80, 80)
+                resized = cv2.resize(bgr_crop, (int(in_w), int(in_h)))
+                blob = np.transpose(resized.astype(np.float32) / 255.0, (2, 0, 1))[np.newaxis, ...]
+                out = self._fas_session.run(None, {input_meta.name: blob})
+                probs = np.squeeze(out[0])
+                live_prob = float(probs[1]) if len(probs) >= 2 else float(probs[0])
+                return float(round(np.clip(live_prob, 0.0, 1.0), 4))
+            except Exception:
+                pass  # Fall back to heuristic assessment
 
         try:
             # 1. Chrominance Naturalness in YCbCr

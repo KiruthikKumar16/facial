@@ -442,6 +442,22 @@ class VideoAuditor:
 
             rel_name = str(vpath.relative_to(root))
 
+            is_short = False
+            notes = ""
+
+            # Tamper check: large file but near-zero playable duration indicates truncated/corrupted stream
+            if file_size > 500_000 and (duration_sec < 1.0 or frame_count <= 0):
+                is_short = True
+                notes = f"Truncated video stream ({file_size} bytes with only {duration_sec:.1f}s playable)"
+
+            # Tamper check: filesystem modification time prior to clip recording start time
+            try:
+                mtime_dt = datetime.datetime.fromtimestamp(vpath.stat().st_mtime)
+                if mtime_dt < start_dt - datetime.timedelta(seconds=60):
+                    notes = (notes + "; " if notes else "") + f"Metadata inconsistency: file modified time ({mtime_dt.isoformat()}) predates clip start ({start_dt.isoformat()})"
+            except Exception:
+                pass
+
             return VideoClipMetadata(
                 file_path=str(vpath),
                 file_name=rel_name,
@@ -455,6 +471,8 @@ class VideoAuditor:
                 duration_seconds=round(duration_sec, 2),
                 start_time=start_dt.isoformat(),
                 end_time=end_dt.isoformat(),
+                is_abnormally_short=is_short,
+                notes=notes,
             )
         except Exception as exc:
             logger.error("Failed to analyze clip %s: %s", vpath, exc)

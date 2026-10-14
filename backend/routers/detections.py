@@ -177,7 +177,7 @@ async def create_detection(
         confidence=req.confidence,
         bbox=f"[{int(req.bbox[0])}, {int(req.bbox[1])}, {int(req.bbox[2])}, {int(req.bbox[3])}]",
         face_image=req.thumbnail or req.face_image,
-        liveness_score=0.0,
+        liveness_score=float(getattr(req, 'liveness_score', 0.0) or 0.0),
         age=req.age,
         gender=parse_gender(req.gender),
         wearing_mask=False,
@@ -261,6 +261,7 @@ async def create_detection(
         logger.exception(f"Error saving detection {req.event_id}: {e}")
         raise
 
+    # 1. Standard role-based alert evaluation
     should_alert, severity, reason = alert_meta_for_detection(status, profile, req.identity)
     if should_alert and severity and reason:
         alert = Alert(
@@ -274,6 +275,39 @@ async def create_detection(
             acknowledged=False,
         )
         db.add(alert)
+        db.commit()
+
+    # 2. Anti-Spoofing / Presentation Attack Alert Guard
+    live_score = detection.liveness_score or 0.0
+    if 0.0 < live_score < settings.liveness_alert_threshold:
+        spoof_alert = Alert(
+            id=str(uuid.uuid4()),
+            detection_id=detection.id,
+            camera_id=req.camera_id,
+            profile_id=profile_id,
+            timestamp=req_timestamp_ist,
+            severity="critical",
+            reason=f"Suspected Presentation Attack / Fake Clone on camera '{req.camera_id}' (Liveness: {live_score:.2f} < {settings.liveness_alert_threshold:.2f})",
+            acknowledged=False,
+        )
+        db.add(spoof_alert)
+        db.commit()
+
+    # 3. Stream Freshness & Anti-Replay Alert Guard
+    time_diff_seconds = (datetime.now(IST) - req_timestamp_ist).total_seconds()
+    is_historical_sync = bool(req.device_id and req.sequence_number is not None and (is_out_of_order or is_duplicate))
+    if time_diff_seconds > settings.max_stream_latency_seconds and not is_historical_sync:
+        replay_alert = Alert(
+            id=str(uuid.uuid4()),
+            detection_id=detection.id,
+            camera_id=req.camera_id,
+            profile_id=profile_id,
+            timestamp=datetime.now(IST),
+            severity="warning",
+            reason=f"Stream Timestamp Skew / Suspected Replay on camera '{req.camera_id}': timestamp is {int(time_diff_seconds)}s in the past",
+            acknowledged=False,
+        )
+        db.add(replay_alert)
         db.commit()
 
     face_log = build_face_log_payload(detection, camera, profile)

@@ -179,5 +179,13 @@ class _Settings:
     def unregistered_similarity_threshold(self) -> float:
         return min(0.99, max(0.50, _parse_float(_get("UNREGISTERED_SIMILARITY_THRESHOLD", "0.75"), 0.75)))
 
+    @property
+    def liveness_alert_threshold(self) -> float:
+        return min(1.0, max(0.1, _parse_float(_get("LIVENESS_ALERT_THRESHOLD", "0.45"), 0.45)))
+
+    @property
+    def max_stream_latency_seconds(self) -> int:
+        return max(60, _parse_int(_get("MAX_STREAM_LATENCY_SECONDS", "900"), 900))
+
 
 settings = _Settings()

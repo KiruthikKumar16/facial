@@ -185,6 +185,9 @@ class CpuCameraPipeline:
         self.last_tier_shift_time = 0.0
         self._display_fps_history: Deque[float] = deque(maxlen=90)
         
+        self._occlusion_counter = 0
+        self.is_occluded = False
+
         self.capture = CameraCapture(
             source,
             camera_id,
@@ -323,12 +326,54 @@ class CpuCameraPipeline:
         if interArea == 0: return 0.0
         return interArea / float((boxA[2]-boxA[0])*(boxA[3]-boxA[1]) + (boxB[2]-boxB[0])*(boxB[3]-boxB[1]) - interArea)
 
+    def _check_camera_occlusion(self, frame: Any) -> bool:
+        """
+        Check if the camera lens is physically covered, spray-painted, or blinded.
+        Samples a downscaled 32x32 grayscale patch to minimize CPU overhead (< 0.1ms).
+        Returns True if occluded / tampered.
+        """
+        if frame is None or getattr(frame, 'size', 0) == 0:
+            return False
+        try:
+            small_gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (32, 32), interpolation=cv2.INTER_NEAREST)
+            mean_val = float(np.mean(small_gray))
+            std_val = float(np.std(small_gray))
+
+            # Condition A: Pitch black / blocked lens (mean < 7.0 and std < 4.0)
+            # Condition B: Solid opaque spray paint (std < 1.2 across entire frame)
+            is_blinded = (mean_val < 7.0 and std_val < 4.0) or (std_val < 1.2)
+            if is_blinded:
+                self._occlusion_counter += 1
+            else:
+                self._occlusion_counter = max(0, self._occlusion_counter - 2)
+
+            was_occluded = self.is_occluded
+            self.is_occluded = self._occlusion_counter >= 30
+            if self.is_occluded and not was_occluded:
+                logger.warning("[CAMERA TAMPER] Camera '%s' is blinded, covered, or occluded!", self.camera_id)
+                if self.logger is not None:
+                    try:
+                        self.logger.log_detection(
+                            camera_id=self.camera_id,
+                            bbox=[0, 0, 10, 10],
+                            identity="CAMERA_OCCLUDED",
+                            confidence=1.0,
+                            liveness_score=0.0,
+                        )
+                    except Exception as e:
+                        logger.debug("Could not log occlusion detection: %s", e)
+            return self.is_occluded
+        except Exception:
+            return False
+
     def step(self) -> Optional[Any]:
         with self.lock:
             if self.raw_frame is None:
                 return self.latest_frame
             frame = self.raw_frame
             self.raw_frame = None
+
+        self._check_camera_occlusion(frame)
 
         now = time.time()
         if self.last_fps_time is not None:
@@ -545,6 +590,19 @@ class CpuCameraPipeline:
         ]
         draw_text_block(display, mode_lines, corner='top_left')
         draw_text_block(display, [fps_text], corner='top_right', font_scale=0.7, thickness=2)
+
+        if self.is_occluded:
+            cv2.rectangle(display, (0, fh - 40), (fw, fh), (0, 0, 200), cv2.FILLED)
+            cv2.putText(
+                display,
+                f"[{self.camera_id}] SECURITY ALERT: LENS BLINDED / OCCLUSION DETECTED",
+                (20, fh - 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
         with self.lock:
             self.latest_frame = display

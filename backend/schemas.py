@@ -215,6 +215,7 @@ class DetectionCreateRequest(BaseModel):
     version_bundle_hash: Optional[str] = None
     embedding: Optional[List[float]] = None
     provenance: Optional[Dict[str, Any]] = None
+    liveness_score: Optional[float] = 0.0
 
 class DetectionBatchRequest(BaseModel):
     detections: List[DetectionCreateRequest]
