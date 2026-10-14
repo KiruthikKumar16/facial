@@ -290,22 +290,61 @@ def run_forensic_vector_query(
     if wearing_glasses is True:
         detection_filters.append(Detection.wearing_glasses.is_(True))
 
-    distance_expr = Embedding.vector.cosine_distance(target_embedding)
-    query = db.query(
-        Profile,
-        distance_expr.label("distance")
-    ).join(Embedding, Profile.id == Embedding.profile_id).filter(
-        distance_expr <= max_distance
-    )
+    is_pgvector = hasattr(Embedding.vector, 'cosine_distance') and getattr(db.bind, 'dialect', None) and db.bind.dialect.name == "postgresql"
+    if is_pgvector:
+        distance_expr = Embedding.vector.cosine_distance(target_embedding)
+        query = db.query(
+            Profile,
+            distance_expr.label("distance")
+        ).join(Embedding, Profile.id == Embedding.profile_id).filter(
+            distance_expr <= max_distance
+        )
 
-    if detection_filters:
-        matching_profile_ids = select(Detection.profile_id).filter(
-            Detection.profile_id.isnot(None),
-            *detection_filters,
-        ).distinct()
-        query = query.filter(Profile.id.in_(matching_profile_ids))
+        if detection_filters:
+            matching_profile_ids = select(Detection.profile_id).filter(
+                Detection.profile_id.isnot(None),
+                *detection_filters,
+            ).distinct()
+            query = query.filter(Profile.id.in_(matching_profile_ids))
 
-    results = query.order_by("distance").limit(25).all()
+        results = query.order_by("distance").limit(25).all()
+    else:
+        # Resilient in-memory vector cosine distance for SQLite / non-pgvector environments
+        candidate_profiles = db.query(Profile).join(Embedding, Profile.id == Embedding.profile_id)
+        if detection_filters:
+            matching_profile_ids = select(Detection.profile_id).filter(
+                Detection.profile_id.isnot(None),
+                *detection_filters,
+            ).distinct()
+            candidate_profiles = candidate_profiles.filter(Profile.id.in_(matching_profile_ids))
+        all_profiles = candidate_profiles.all()
+        target_vec = np.asarray(target_embedding, dtype=np.float32).flatten()
+        target_norm = float(np.linalg.norm(target_vec) + 1e-10)
+
+        scored = []
+        for p in all_profiles:
+            best_dist = 2.0
+            for emb in p.embeddings:
+                raw_v = emb.vector
+                if raw_v is None:
+                    continue
+                if isinstance(raw_v, str):
+                    try:
+                        raw_v = json.loads(raw_v)
+                    except Exception:
+                        continue
+                v = np.asarray(raw_v, dtype=np.float32).flatten()
+                if v.size != 512:
+                    continue
+                v_norm = float(np.linalg.norm(v) + 1e-10)
+                sim = float(np.dot(target_vec, v) / (target_norm * v_norm))
+                dist = 1.0 - sim
+                if dist < best_dist:
+                    best_dist = dist
+            if best_dist <= max_distance:
+                scored.append((p, best_dist))
+        scored.sort(key=lambda x: x[1])
+        results = scored[:25]
 
     matches = []
     seen = set()

@@ -49,16 +49,15 @@ def get_kpis(db: Session = Depends(get_db)):
         Alert.acknowledged == False
     ).scalar() or 0
     
-    # Today's stats (convert local midnight to UTC naive for DB comparison)
+    # Today's stats evaluated against local day start
     today_start_ist = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
-    today_start_utc_naive = today_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
     
     recognitions_today = db.query(func.count(Detection.id)).filter(
-        Detection.timestamp >= today_start_utc_naive,
+        Detection.timestamp >= today_start_ist,
         Detection.status == DetectionStatus.recognized
     ).scalar() or 0
     unknowns_today = db.query(func.count(Detection.id)).filter(
-        Detection.timestamp >= today_start_utc_naive,
+        Detection.timestamp >= today_start_ist,
         Detection.status == DetectionStatus.unknown
     ).scalar() or 0
     

@@ -139,3 +139,17 @@ def test_create_profile_validation():
     assert data["embedding_status"] == "missing"
     assert data["embedding_count"] == 0
 
+
+def test_forensic_vector_search_fallback():
+    """Verify forensic vector query works without throwing errors on sqlite/pgvector."""
+    from database import SessionLocal
+    from routers.forensic import run_forensic_vector_query
+    db = SessionLocal()
+    try:
+        dummy_vector = [0.1] * 512
+        matches = run_forensic_vector_query(db, dummy_vector, threshold=0.5)
+        assert isinstance(matches, list)
+    finally:
+        db.close()
+
+
