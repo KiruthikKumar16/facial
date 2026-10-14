@@ -14,6 +14,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import asdict, dataclass, field
@@ -419,16 +420,55 @@ class VideoAuditor:
 
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = float(cap.get(cv2.CAP_PROP_FPS))
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            raw_fps = cap.get(cv2.CAP_PROP_FPS)
+            raw_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+            # Probe decodability of actual video stream payload
+            decode_ok, sample_frame = cap.read()
             cap.release()
 
-            if fps <= 0 or frame_count <= 0:
-                # Fallback FPS if container header is corrupt
+            # Sanitize FPS against NaN, Inf, and non-positive numbers
+            try:
+                fps = float(raw_fps)
+            except (TypeError, ValueError):
                 fps = 25.0
+            if math.isnan(fps) or math.isinf(fps) or fps <= 0:
+                fps = 25.0
+
+            # Sanitize frame count against NaN, Inf, and OverflowError
+            try:
+                if isinstance(raw_frames, (float, int)) and (math.isnan(raw_frames) or math.isinf(raw_frames)):
+                    frame_count = 0
+                else:
+                    frame_count = int(raw_frames)
+            except (TypeError, ValueError, OverflowError):
+                frame_count = 0
+            if frame_count < 0:
+                frame_count = 0
+
+            notes = ""
+            is_short = False
+
+            # Verify actual video frame decodability
+            if not decode_ok or sample_frame is None:
+                notes = "Unreadable stream payload: container opened but frames cannot be decoded"
+                is_short = True
                 duration_sec = 0.0
             else:
-                duration_sec = frame_count / fps
+                try:
+                    frame_mean = float(sample_frame.mean())
+                    if frame_mean < 1.0 and frame_count > 10:
+                        notes = "Blank video stream: all-black frame payload detected"
+                except Exception:
+                    pass
+
+                if frame_count <= 0:
+                    duration_sec = 0.0
+                else:
+                    duration_sec = frame_count / fps
+
+            if math.isnan(duration_sec) or math.isinf(duration_sec) or duration_sec < 0:
+                duration_sec = 0.0
 
             start_dt = extract_clip_start_time(vpath)
             end_dt = start_dt + datetime.timedelta(seconds=duration_sec)
@@ -442,13 +482,14 @@ class VideoAuditor:
 
             rel_name = str(vpath.relative_to(root))
 
-            is_short = False
-            notes = ""
+            # Framerate anomaly check (CCTV is standardly 10-30 FPS)
+            if (fps < 5.0 or fps > 60.0) and decode_ok:
+                notes = (notes + "; " if notes else "") + f"Anomalous framerate ({fps:.1f} FPS vs standard 10-30 FPS CCTV)"
 
             # Tamper check: large file but near-zero playable duration indicates truncated/corrupted stream
             if file_size > 500_000 and (duration_sec < 1.0 or frame_count <= 0):
                 is_short = True
-                notes = f"Truncated video stream ({file_size} bytes with only {duration_sec:.1f}s playable)"
+                notes = (notes + "; " if notes else "") + f"Truncated video stream ({file_size} bytes with only {duration_sec:.1f}s playable)"
 
             # Tamper check: filesystem modification time prior to clip recording start time
             try:

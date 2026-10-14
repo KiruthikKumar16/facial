@@ -111,3 +111,41 @@ def test_api_ingest_status_and_stop(client, auth_headers):
 
     stop_res = client.post("/api/video-audit/stop", headers=auth_headers)
     assert stop_res.status_code == 200
+
+
+def test_video_auditor_nan_sanitization(monkeypatch, sample_video_dir):
+    """Verify auditor does not crash when container returns NaN/Inf for FPS or frames."""
+    import math
+
+    class MockVideoCapture:
+        def __init__(self, path):
+            self.opened = True
+        def isOpened(self):
+            return self.opened
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FPS:
+                return float("nan")
+            if prop == cv2.CAP_PROP_FRAME_COUNT:
+                return float("inf")
+            if prop == cv2.CAP_PROP_FRAME_WIDTH:
+                return 640
+            if prop == cv2.CAP_PROP_FRAME_HEIGHT:
+                return 480
+            return 0
+        def read(self):
+            # Returns a valid frame
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", MockVideoCapture)
+    auditor = VideoAuditor(tolerance_seconds=3.0)
+    report = auditor.scan_directory(sample_video_dir)
+
+    assert report.total_files_scanned == 2
+    for clip in report.clips:
+        assert not math.isnan(clip.fps)
+        assert not math.isinf(clip.fps)
+        assert not math.isnan(clip.duration_seconds)
+        assert not math.isinf(clip.duration_seconds)
+
