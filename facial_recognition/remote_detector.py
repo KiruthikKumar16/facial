@@ -37,6 +37,11 @@ class RemoteInsightFaceDetector:
         self.fallback_to_local = bool(fallback_to_local)
         self.api_key = api_key
 
+        self._session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
+
         self._local_detector: Optional[InsightFaceDetector] = None
         self._consecutive_failures = 0
         self._max_consecutive_failures = 3
@@ -67,6 +72,9 @@ class RemoteInsightFaceDetector:
 
     def detect(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Detect faces either via remote endpoint or local fallback."""
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return []
+
         if self._should_use_local():
             return self._local_detector.detect(frame)
 
@@ -80,7 +88,7 @@ class RemoteInsightFaceDetector:
                 headers["x-api-key"] = self.api_key
 
             files = {"file": ("frame.jpg", buf.tobytes(), "image/jpeg")}
-            response = requests.post(
+            response = self._session.post(
                 self.endpoint,
                 files=files,
                 headers=headers,
@@ -126,3 +134,10 @@ class RemoteInsightFaceDetector:
         if self._local_detector is not None:
             return self._local_detector.extract_embedding(frame, face_dict)
         return None
+
+    def close(self) -> None:
+        """Release underlying HTTP session."""
+        try:
+            self._session.close()
+        except Exception:
+            pass

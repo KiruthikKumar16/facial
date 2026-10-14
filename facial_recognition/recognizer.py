@@ -18,6 +18,8 @@ class Recognizer:
         self.labels: list[str] = []
         self.embeddings: np.ndarray = np.zeros((0, 512), dtype=np.float32)
         self.lock = threading.RLock()
+        self._stop_event = threading.Event()
+        self._sync_thread: Optional[threading.Thread] = None
         self._load_gallery(gallery_path)
 
     def _normalize_embeddings(self, embs: np.ndarray) -> np.ndarray:
@@ -34,16 +36,25 @@ class Recognizer:
         if not gallery_path:
             return
         def sync():
-            while True:
-                time.sleep(300)
+            while not self._stop_event.is_set():
+                if self._stop_event.wait(300):
+                    break
                 self._fetch_gallery_from_api(gallery_path)
                 
         success = self._fetch_gallery_from_api(gallery_path)
         if not success:
             self._load_from_file(gallery_path)
             
-        t = threading.Thread(target=sync, daemon=True)
-        t.start()
+        self._sync_thread = threading.Thread(target=sync, daemon=True)
+        self._sync_thread.start()
+
+    def stop(self) -> None:
+        """Stop background sync thread."""
+        self._stop_event.set()
+
+    def close(self) -> None:
+        """Alias for stop."""
+        self.stop()
         
     def _fetch_gallery_from_api(self, fallback_path: str) -> bool:
         api_url = os.environ.get("API_URL", "http://localhost:1223").rstrip('/')

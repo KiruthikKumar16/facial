@@ -29,6 +29,13 @@ class CameraCapture(threading.Thread):
         self._capture: Any = None
 
     def run(self) -> None:
+        is_video_file = isinstance(self.source, str) and any(
+            self.source.lower().endswith(ext)
+            for ext in ('.mp4', '.avi', '.mkv', '.mov', '.ts', '.m4v', '.webm')
+        )
+        fps = 0.0
+        frame_interval = 0.0
+
         while not self._stop_event.is_set():
             if self._capture is None or not self._capture.isOpened():
                 logger.info('[%s] connecting to source %s', self.camera_id, self.source)
@@ -37,11 +44,16 @@ class CameraCapture(threading.Thread):
                     logger.warning('[%s] capture not opened, retry in %s seconds', self.camera_id, self.reconnect_interval)
                     time.sleep(self.reconnect_interval)
                     continue
+                if is_video_file:
+                    raw_fps = self._capture.get(cv2.CAP_PROP_FPS)
+                    fps = raw_fps if raw_fps and 1.0 <= raw_fps <= 120.0 else 25.0
+                    frame_interval = 1.0 / fps
 
+            loop_start = time.perf_counter()
             ret, frame = self._capture.read()
             if not ret or frame is None:
                 # If source is a local video file, loop smoothly back to start
-                if isinstance(self.source, str) and any(self.source.lower().endswith(ext) for ext in ('.mp4', '.avi', '.mkv', '.mov', '.ts', '.m4v', '.webm')):
+                if is_video_file:
                     try:
                         self._capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         ret, frame = self._capture.read()
@@ -66,6 +78,13 @@ class CameraCapture(threading.Thread):
                     # Best-effort logging; never allow logging to raise
                     pass
 
+            # Throttle playback for local video files to preserve natural frame rate
+            if is_video_file and frame_interval > 0:
+                elapsed = time.perf_counter() - loop_start
+                remaining = frame_interval - elapsed
+                if remaining > 0.001:
+                    time.sleep(remaining)
+
         self._release_capture()
 
     def _connect(self) -> None:
@@ -79,7 +98,16 @@ class CameraCapture(threading.Thread):
             actual_h = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
             logger.info('[%s] webcam resolution requested %dx%d, actual %dx%d', self.camera_id, self.capture_width, self.capture_height, actual_w, actual_h)
         else:
+            if isinstance(self.source, str) and self.source.lower().startswith(("rtsp://", "rtsps://")):
+                import os
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
             self._capture = cv2.VideoCapture(self.source)
+
+        if self._capture is not None and self._capture.isOpened():
+            try:
+                self._capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
 
     def _release_capture(self) -> None:
         if self._capture is not None:
