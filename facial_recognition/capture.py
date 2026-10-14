@@ -40,10 +40,18 @@ class CameraCapture(threading.Thread):
 
             ret, frame = self._capture.read()
             if not ret or frame is None:
-                logger.warning('[%s] frame read failed, reconnecting', self.camera_id)
-                self._release_capture()
-                time.sleep(self.reconnect_interval)
-                continue
+                # If source is a local video file, loop smoothly back to start
+                if isinstance(self.source, str) and any(self.source.lower().endswith(ext) for ext in ('.mp4', '.avi', '.mkv', '.mov', '.ts', '.m4v', '.webm')):
+                    try:
+                        self._capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = self._capture.read()
+                    except Exception:
+                        ret, frame = False, None
+                if not ret or frame is None:
+                    logger.warning('[%s] frame read failed, reconnecting', self.camera_id)
+                    self._release_capture()
+                    time.sleep(self.reconnect_interval)
+                    continue
 
             try:
                 start = time.perf_counter()

@@ -228,4 +228,43 @@ def test_api_scan_single_file(client, auth_headers, sample_video_dir):
     assert data["total_cameras"] == 1
 
 
+def test_compute_sha256_head_mid_tail():
+    """Verify head-mid-tail block sampling for fast hashing of large files."""
+    from facial_recognition.video_auditor import compute_sha256
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        # Create a 6MB file
+        f.write(b"A" * (2 * 1024 * 1024))
+        f.write(b"B" * (2 * 1024 * 1024))
+        f.write(b"C" * (2 * 1024 * 1024))
+        path = Path(f.name)
+
+    try:
+        h1 = compute_sha256(path, max_bytes=3 * 1024 * 1024)
+        assert len(h1) == 64
+
+        # Tamper the middle block
+        with path.open("r+b") as f:
+            f.seek(3 * 1024 * 1024)
+            f.write(b"Z" * 1024)
+
+        h2 = compute_sha256(path, max_bytes=3 * 1024 * 1024)
+        assert h1 != h2, "Head-mid-tail sampling must detect tampering in the middle block"
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_api_ingest_root_drive_blocked(client, auth_headers):
+    """Verify API prevents DoS by blocking raw drive root ingestion."""
+    for root_candidate in ("C:\\", "D:\\", "/"):
+        res = client.post(
+            "/api/video-audit/ingest",
+            json={"directory": root_candidate},
+            headers=auth_headers,
+        )
+        assert res.status_code == 400
+        assert "restricted" in res.json()["detail"].lower()
+
+
+
 

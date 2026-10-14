@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import datetime
 import logging
+import math
 import os
 import sys
 import threading
@@ -143,7 +144,11 @@ class BatchVideoIngestEngine:
 
         # 1. Audit and discover all video clips
         auditor = VideoAuditor(tolerance_seconds=tolerance_seconds, compute_full_hashes=False)
-        report = auditor.scan_directory(footage_dir)
+        target = Path(footage_dir).resolve()
+        if target.is_file():
+            report = auditor.scan_file(target)
+        else:
+            report = auditor.scan_directory(target)
 
         clips = report.clips
         # Sort chronologically by start_time
@@ -252,8 +257,12 @@ class BatchVideoIngestEngine:
             logger.warning("Could not open clip: %s", clip.file_path)
             return 0, 0, 0
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
+        raw_fps = cap.get(cv2.CAP_PROP_FPS)
+        try:
+            fps = float(raw_fps)
+        except (TypeError, ValueError):
+            fps = 25.0
+        if math.isnan(fps) or math.isinf(fps) or fps <= 0:
             fps = 25.0
 
         # Calculate frame skip: e.g. 30 fps video with 3 fps sampling => skip 10 frames

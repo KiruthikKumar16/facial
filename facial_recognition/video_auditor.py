@@ -155,18 +155,32 @@ def format_seconds(seconds: float) -> str:
 
 
 def compute_sha256(file_path: Path, max_bytes: Optional[int] = None) -> str:
-    """Compute SHA-256 hash in 1MB chunks for chain-of-custody verification."""
+    """Compute SHA-256 hash for chain-of-custody verification.
+    If max_bytes is provided and file exceeds max_bytes, samples head, mid, and tail blocks.
+    """
     hasher = hashlib.sha256()
-    bytes_read = 0
-    with file_path.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-            bytes_read += len(chunk)
-            if max_bytes and bytes_read >= max_bytes:
-                break
+    size = file_path.stat().st_size
+    if not max_bytes or size <= max_bytes:
+        with file_path.open("rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+    else:
+        # Sample head, middle, and tail blocks (1/3 each of max_bytes)
+        block = max(1024 * 1024, max_bytes // 3)
+        with file_path.open("rb") as f:
+            # Head block
+            hasher.update(f.read(block))
+            # Mid block
+            if size > block * 2:
+                f.seek((size // 2) - (block // 2))
+                hasher.update(f.read(block))
+            # Tail block
+            if size > block:
+                f.seek(max(0, size - block))
+                hasher.update(f.read(block))
     return hasher.hexdigest()
 
 

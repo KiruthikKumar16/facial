@@ -112,11 +112,19 @@ def start_batch_ingest(req: IngestRequest):
     and populates detections, alerts, and demographics into the database.
     """
     global _ingestion_thread
-    target_path = Path(req.directory)
+    target_path = Path(req.directory).resolve()
     if not target_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Directory does not exist: {req.directory}",
+            detail=f"Path does not exist: {req.directory}",
+        )
+
+    # Protect against raw root directory scan DoS
+    root_str = str(target_path).strip().rstrip("/\\")
+    if not root_str or (len(root_str) <= 3 and ":" in root_str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ingesting raw drive root is restricted for security. Please specify a CCTV folder path.",
         )
 
     engine = get_global_ingest_engine()
