@@ -149,3 +149,37 @@ def test_video_auditor_nan_sanitization(monkeypatch, sample_video_dir):
         assert not math.isnan(clip.duration_seconds)
         assert not math.isinf(clip.duration_seconds)
 
+
+def test_video_auditor_timeline_overlap_collision():
+    """Verify that overlapping clips (spliced/backdated video) trigger timeline collision alert."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cam_dir = Path(tmpdir) / "cam_lobby"
+        cam_dir.mkdir(parents=True, exist_ok=True)
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Clip 1: Starts at 10:00:00, 10 frames at 1.0 fps => duration 10.0s, ends at 10:00:10
+        c1 = cam_dir / "CAM01_2026-10-10_10-00-00.mp4"
+        out1 = cv2.VideoWriter(str(c1), fourcc, 1.0, (160, 120))
+        for _ in range(10):
+            out1.write(np.zeros((120, 160, 3), dtype=np.uint8))
+        out1.release()
+
+        # Clip 2: Starts at 10:00:05 (starts 5 seconds BEFORE Clip 1 ends => 5s collision!)
+        c2 = cam_dir / "CAM01_2026-10-10_10-00-05.mp4"
+        out2 = cv2.VideoWriter(str(c2), fourcc, 1.0, (160, 120))
+        for _ in range(10):
+            out2.write(np.zeros((120, 160, 3), dtype=np.uint8))
+        out2.release()
+
+        auditor = VideoAuditor(tolerance_seconds=2.0)
+        report = auditor.scan_directory(tmpdir)
+
+        assert report.total_files_scanned == 2
+        assert len(report.gaps) == 1
+        collision = report.gaps[0]
+        assert collision.severity == "TIMELINE_OVERLAP_COLLISION"
+        assert collision.tamper_risk == "HIGH"
+        assert "overlap" in collision.formatted_duration
+        assert report.security_verdict == "HIGH_SECURITY_ALERT_TIMELINE_COLLISION"
+
+

@@ -319,8 +319,29 @@ class VideoAuditor:
                     )
                     cam_gaps.append(gap)
                     all_gaps.append(gap)
+                elif gap_seconds < -self.tolerance_seconds:
+                    # Timeline collision / overlap detected!
+                    overlap_sec = abs(gap_seconds)
+                    severity = "TIMELINE_OVERLAP_COLLISION"
+                    risk = "HIGH"
+                    desc = f"Timeline collision: '{nxt.file_name}' starts {format_seconds(overlap_sec)} before '{cur.file_name}' ends. Suspected spliced, duplicate, or backdated video."
 
-            cam_gap_sec = sum(g.gap_duration_seconds for g in cam_gaps)
+                    gap = TimelineGap(
+                        camera_id=cam_id,
+                        gap_start=nxt_start.isoformat(),
+                        gap_end=cur_end.isoformat(),
+                        gap_duration_seconds=round(gap_seconds, 2),
+                        formatted_duration=f"{format_seconds(overlap_sec)} overlap",
+                        preceding_file=cur.file_name,
+                        succeeding_file=nxt.file_name,
+                        severity=severity,
+                        tamper_risk=risk,
+                        description=desc,
+                    )
+                    cam_gaps.append(gap)
+                    all_gaps.append(gap)
+
+            cam_gap_sec = sum(g.gap_duration_seconds for g in cam_gaps if g.gap_duration_seconds > 0)
             total_gap_sec += cam_gap_sec
 
             earliest_ts = clips[0].start_time if clips else ""
@@ -337,14 +358,16 @@ class VideoAuditor:
             span_sec = max(span_sec, cam_footage_sec + cam_gap_sec, 0.001)
             continuity_pct = max(0.0, min(100.0, (cam_footage_sec / span_sec) * 100.0))
 
-            if not cam_gaps and not any(c.is_abnormally_short for c in clips):
-                verdict = "SECURE"
+            if any(g.severity == "TIMELINE_OVERLAP_COLLISION" for g in cam_gaps):
+                verdict = "TIMELINE_COLLISION_DETECTED"
             elif any(g.severity == "CRITICAL_BLACKOUT" for g in cam_gaps):
                 verdict = "CRITICAL_GAPS_DETECTED"
             elif cam_gaps:
                 verdict = "GAPS_DETECTED"
-            else:
+            elif any(c.is_abnormally_short for c in clips):
                 verdict = "SUSPICIOUS_TRIMS"
+            else:
+                verdict = "SECURE"
 
             cameras_summary.append(
                 CameraContinuitySummary(
@@ -375,14 +398,16 @@ class VideoAuditor:
 
         if len(all_clips) == 0:
             security_verdict = "NO_FOOTAGE_FOUND"
-        elif not all_gaps and total_trims == 0:
-            security_verdict = "SECURE_100_PERCENT_CONTINUOUS"
+        elif any(g.severity == "TIMELINE_OVERLAP_COLLISION" for g in all_gaps):
+            security_verdict = "HIGH_SECURITY_ALERT_TIMELINE_COLLISION"
         elif any(g.severity == "CRITICAL_BLACKOUT" for g in all_gaps):
             security_verdict = "HIGH_SECURITY_ALERT_MISSING_FOOTAGE"
         elif all_gaps:
             security_verdict = "SECURITY_WARNING_TIMELINE_GAPS"
-        else:
+        elif total_trims > 0:
             security_verdict = "WARNING_SUSPICIOUS_CLIPS_DETECTED"
+        else:
+            security_verdict = "SECURE_100_PERCENT_CONTINUOUS"
 
         report = VideoAuditReport(
             scan_timestamp=datetime.datetime.now().isoformat(),
