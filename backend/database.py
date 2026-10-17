@@ -92,6 +92,12 @@ def ensure_detection_event_id_column():
                 "camera_config_version": "INTEGER",
                 "algorithm_version": "VARCHAR",
                 "version_bundle_hash": "VARCHAR",
+                "source": "VARCHAR DEFAULT 'live'",
+                "batch_id": "VARCHAR",
+            },
+            "alerts": {
+                "source": "VARCHAR DEFAULT 'live'",
+                "batch_id": "VARCHAR",
             },
             "embeddings": {
                 "model_version": "VARCHAR",
@@ -114,11 +120,25 @@ def ensure_detection_event_id_column():
                         "ON detections (event_id)"
                     )
                 )
+            if table_name == "detections" and "source" not in columns:
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_detections_source_timestamp "
+                        "ON detections (source, timestamp)"
+                    )
+                )
             if table_name == "embeddings" and "model_version" not in columns:
                 connection.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS ix_embeddings_model_version "
                         "ON embeddings (model_version)"
+                    )
+                )
+            if table_name == "alerts" and "source" not in columns:
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_alerts_source_timestamp "
+                        "ON alerts (source, timestamp)"
                     )
                 )
 

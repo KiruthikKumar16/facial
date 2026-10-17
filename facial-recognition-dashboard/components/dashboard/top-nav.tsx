@@ -9,8 +9,10 @@ import {
   Activity,
   Layers,
   CheckCircle2,
+  HardDrive,
 } from 'lucide-react'
 import type { SystemHealth } from '@/lib/types'
+import { useDashboardMode } from '@/lib/mode-context'
 
 function VersionBundleBadge() {
   const { data: bundle, isLoading, isError } = useQuery({
@@ -143,7 +145,11 @@ function Kpi({
 }
 
 export function TopNav() {
-  const { data: kpis } = useQuery({ queryKey: ['kpis'], queryFn: () => fetchKpis() })
+  const { mode, setMode, selectedBatchId } = useDashboardMode()
+  const { data: kpis } = useQuery({
+    queryKey: ['kpis', mode, selectedBatchId],
+    queryFn: () => fetchKpis(mode, selectedBatchId ?? undefined),
+  })
 
   const health: SystemHealth =
     kpis?.systemHealth === 'green' || kpis?.systemHealth === 'yellow' || kpis?.systemHealth === 'red'
@@ -159,25 +165,57 @@ export function TopNav() {
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-md">
       <div className="flex flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
-        <div className="flex items-center gap-3">
-          <span className="flex size-9 items-center justify-center rounded-md bg-destructive/15 text-destructive ring-1 ring-inset ring-destructive/30">
-            <ScanFace className="size-5" />
-          </span>
-          <div className="leading-tight">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold tracking-tight">SENTINEL</p>
-              <VersionBundleBadge />
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-md bg-destructive/15 text-destructive ring-1 ring-inset ring-destructive/30">
+              <ScanFace className="size-5" />
+            </span>
+            <div className="leading-tight">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold tracking-tight">SENTINEL</p>
+                <VersionBundleBadge />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Facial Recognition Operations Console
+              </p>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Facial Recognition Operations Console
-            </p>
+          </div>
+
+          {/* Global Surveillance Mode Switch */}
+          <div className="flex items-center rounded-lg border border-border/80 bg-muted/60 p-1 shadow-inner">
+            <button
+              type="button"
+              onClick={() => setMode('live')}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all",
+                mode === 'live'
+                  ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <span className={cn("size-2 rounded-full", mode === 'live' ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/40")} />
+              <span>Live Surveillance</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('archive')}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all",
+                mode === 'archive'
+                  ? "bg-background text-amber-500 shadow-sm ring-1 ring-amber-500/40"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <HardDrive className={cn("size-3.5", mode === 'archive' ? "text-amber-500" : "text-muted-foreground")} />
+              <span>Archive / CCTV Ingest</span>
+            </button>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center divide-x divide-border rounded-lg border border-border bg-card/60 py-1.5">
           <Kpi
             icon={CameraIcon}
-            label="Cameras Online"
+            label={mode === 'live' ? "Cameras Online" : "Archive Cameras"}
             value={
               connectedCameras !== null && totalCameras !== null
                 ? `${connectedCameras}/${totalCameras}`
@@ -186,12 +224,12 @@ export function TopNav() {
           />
           <Kpi
             icon={ScanFace}
-            label="Detections Today"
+            label={mode === 'live' ? "Detections Today" : "Archive Detections"}
             value={formatNumber(detectionsToday)}
           />
           <Kpi
             icon={ShieldAlert}
-            label="Active Alerts"
+            label={mode === 'live' ? "Active Alerts" : "Archive Alerts"}
             value={activeAlerts !== null ? String(activeAlerts) : '—'}
             badge={activeAlerts ?? undefined}
             tone="text-destructive"

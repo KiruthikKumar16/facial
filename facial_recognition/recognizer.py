@@ -107,7 +107,12 @@ class Recognizer:
                 self.labels = []
                 self.embeddings = np.zeros((0, 512), dtype=np.float32)
 
-    def recognize(self, embedding: np.ndarray) -> tuple[str, float]:
+    def recognize(
+        self,
+        embedding: np.ndarray,
+        pose_meta: Optional[Dict[str, Any]] = None,
+        min_confidence: Optional[float] = None,
+    ) -> tuple[str, float]:
         start = time.perf_counter()
         with self.lock:
             q_norm = np.linalg.norm(embedding)
@@ -128,13 +133,49 @@ class Recognizer:
                 return 'Unknown', 0.0
 
             similarities = np.dot(self.embeddings, norm_query)
-            best_index = int(np.argmax(similarities))
-            best_score = float(similarities[best_index])
+
+            # Universal CCTV Multi-Exemplar Aggregation:
+            # Group highest similarity per identity to handle multi-angle enrollments
+            scores_by_label: Dict[str, float] = {}
+            for idx, label in enumerate(self.labels):
+                sim = float(similarities[idx])
+                if label not in scores_by_label or sim > scores_by_label[label]:
+                    scores_by_label[label] = sim
+
+            sorted_candidates = sorted(scores_by_label.items(), key=lambda x: x[1], reverse=True)
+            if not sorted_candidates:
+                return 'Unknown', 0.0
+
+            best_label, best_score = sorted_candidates[0]
+            second_score = sorted_candidates[1][1] if len(sorted_candidates) > 1 else -1.0
+            margin = best_score - second_score if second_score >= 0 else 1.0
 
             dur = (time.perf_counter() - start) * 1000.0
-            logger.debug('Recognize took %.2f ms, best_score=%.4f, index=%d', dur, best_score, best_index)
-            if best_score >= self.threshold and best_index < len(self.labels):
-                return self.labels[best_index], best_score
+            logger.debug('Recognize took %.2f ms, best=%s (%.4f), margin=%.4f', dur, best_label, best_score, margin)
+
+            # 1. Direct standard threshold match
+            # If min_confidence is explicitly passed (e.g. cluster centroid re-identification), use it
+            if min_confidence is not None:
+                effective_threshold = float(min_confidence)
+            else:
+                # Require minimum 0.58 for reliable 1:N CCTV gallery matching to eliminate false hits
+                effective_threshold = max(0.58, self.threshold)
+
+            if best_score >= effective_threshold:
+                return best_label, best_score
+
+            # 2. Universal CCTV Angle-Adaptive Margin-Gated Match:
+            # When looking down from ceiling/desk view, cosine similarity drops ~0.05-0.08.
+            # Only accept match if there is a wide margin (>= 0.12) over the nearest competitor and no blind scalp.
+            if pose_meta:
+                pitch = float(pose_meta.get("pitch_ratio", 0.85))
+                is_steep = bool(pose_meta.get("is_steep_scalp", False))
+                if (pitch < 0.60 or pitch > 1.15) and not is_steep and margin >= 0.12:
+                    adaptive_thresh = max(0.55, effective_threshold - 0.05)
+                    if best_score >= adaptive_thresh:
+                        logger.info("Universal CCTV angle-adaptive match: %s (score=%.4f, thresh=%.4f, margin=%.4f)",
+                                    best_label, best_score, adaptive_thresh, margin)
+                        return best_label, best_score
 
             if self.hierarchical_engine is not None:
                 try:
@@ -146,4 +187,8 @@ class Recognizer:
                     logger.warning(f"Hierarchical search fallback failed: {e}")
 
             return 'Unknown', best_score
+
+    def match(self, embedding: np.ndarray, pose_meta: Optional[Dict[str, Any]] = None) -> tuple[str, float]:
+        """Alias for recognize method."""
+        return self.recognize(embedding, pose_meta=pose_meta)
 

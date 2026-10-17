@@ -9,9 +9,11 @@ import {
   runForensicSearch,
   fetchProfiles,
   fetchUnregisteredSubjects,
+  fetchImportBatches,
+  fetchFaceLogs,
   type ForensicSearchPayload,
 } from '@/lib/api'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,7 +22,8 @@ import { formatTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { ForensicMatch, Gender } from '@/lib/types'
 import {
-  ImageUp, Route, ArrowRight, ScanSearch, UploadCloud, X, History, Activity, MonitorPlay, RotateCcw, Check, ChevronDown, Search
+  ImageUp, ArrowRight, ScanSearch, UploadCloud, X, History, Activity, MonitorPlay, RotateCcw, Check, ChevronDown, Search,
+  Film, Lock, Unlock, Clock, UserCheck, Sparkles, User
 } from 'lucide-react'
 
 // --- Normalization ---
@@ -124,6 +127,14 @@ function Chip({ active, onClick, children, className }: { active: boolean, onCli
   )
 }
 
+function toLocalDatetimeString(isoOrDate: string | Date | undefined): string {
+  if (!isoOrDate) return ''
+  const d = new Date(isoOrDate)
+  if (isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 function getRangeDates(range: string) {
   const now = new Date()
   const from = new Date()
@@ -137,16 +148,41 @@ function getRangeDates(range: string) {
   return { from: format(from), to: format(now) }
 }
 
+export interface ClipVectorItem {
+  id: string
+  name: string
+  role: string
+  type: 'profile' | 'unregistered'
+  thumbnail?: string | null
+  sightingCount: number
+  firstSeen?: string
+  lastSeen?: string
+  batchId?: string | null
+  cameraName?: string | null
+}
+
 export function ForensicTab() {
   const { data: cameras = [] } = useQuery({ queryKey: ['cameras'], queryFn: fetchCameras })
   const { data: networkData } = useQuery({ queryKey: ['movement-network'], queryFn: fetchMovementNetwork })
   const { data: profiles = [] } = useQuery({ queryKey: ['profiles'], queryFn: fetchProfiles })
   const { data: unregistered = [] } = useQuery({ queryKey: ['unregistered'], queryFn: fetchUnregisteredSubjects })
+  const { data: importBatches = [] } = useQuery({ queryKey: ['import-batches'], queryFn: fetchImportBatches })
+  const { data: archiveLogs = [] } = useQuery({
+    queryKey: ['archive-logs-forensic'],
+    queryFn: () => fetchFaceLogs(300, 0, 'archive'),
+  })
 
   // Left Panel State
-  const [searchSource, setSearchSource] = useState<'probe' | 'known'>('probe')
+  const [searchSource, setSearchSource] = useState<'clip' | 'known' | 'probe'>('clip')
   const [file, setFile] = useState<File | null>(null)
   
+  // Clip & Batch Selection State
+  const [selectedBatchId, setSelectedBatchId] = useState<string>('all')
+  const [isTimeLocked, setIsTimeLocked] = useState<boolean>(false)
+  const [isVectorDropdownOpen, setIsVectorDropdownOpen] = useState<boolean>(false)
+  const [dropdownSearch, setDropdownSearch] = useState<string>('')
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
   const [vectorSearchQuery, setVectorSearchQuery] = useState('')
   const [selectedKnownVectorId, setSelectedKnownVectorId] = useState<string | null>(null)
 
@@ -167,26 +203,37 @@ export function ForensicTab() {
     return search.data.find(m => m.profileId === selectedMatchId) || search.data[0] || null;
   }, [search.data, selectedMatchId])
   
-  const { data: trajectory, isFetching: trajectoryLoading } = useQuery({
+  const { data: trajectory } = useQuery({
     queryKey: ['trajectory', selectedMatch?.profileId],
     queryFn: () => selectedMatch?.profileId ? fetchTrajectory(selectedMatch.profileId) : null,
     enabled: !!selectedMatch?.profileId,
   })
 
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsVectorDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
   // Effects
   useEffect(() => {
-    if (timeRange !== 'custom') {
+    if (timeRange !== 'custom' && !isTimeLocked) {
       const { from, to } = getRangeDates(timeRange)
       setDateFrom(from)
       setDateTo(to)
     }
-  }, [timeRange])
+  }, [timeRange, isTimeLocked])
   
   useEffect(() => {
     if (search.data && search.data.length > 0 && !selectedMatchId) {
       setSelectedMatchId(search.data[0].profileId || null)
     }
-  }, [search.data])
+  }, [search.data, selectedMatchId])
 
   function toggleCamera(id: string) {
     if (id === 'all') { setSelectedCameras([]); return }
@@ -197,12 +244,152 @@ export function ForensicTab() {
     setFile(null)
     setSelectedKnownVectorId(null)
     setVectorSearchQuery('')
+    setDropdownSearch('')
     setTimeRange('24h')
+    setIsTimeLocked(false)
     setSelectedCameras([])
     setGender('all')
     search.reset()
     setSelectedMatchId(null)
     setActiveEventIndex(null)
+  }
+
+  // Clip recognized vectors aggregation
+  const clipVectors = useMemo<ClipVectorItem[]>(() => {
+    const list: ClipVectorItem[] = []
+    const rawDets = archiveLogs || []
+
+    // 1. Unregistered Subjects from footage
+    unregistered.forEach(u => {
+      const subjectDets = rawDets.filter(d => (d as any).unregisteredSubjectId === u.id)
+      const bestThumb = u.thumbnail || subjectDets[0]?.faceImage || null
+      const count = subjectDets.length > 0 ? subjectDets.length : (u.captureCount || 1)
+      const firstSeen = subjectDets[0]?.timestamp || u.firstSeen
+      const lastSeen = subjectDets[subjectDets.length - 1]?.timestamp || u.lastSeen
+      const batchId = subjectDets[0]?.batchId || null
+      const cam = subjectDets[0]?.cameraName || null
+
+      if (selectedBatchId === 'all' || !batchId || batchId === selectedBatchId) {
+        list.push({
+          id: u.id,
+          name: u.displayName || `Subject ${u.id.slice(0, 8)}`,
+          role: 'visitor',
+          type: 'unregistered',
+          thumbnail: bestThumb,
+          sightingCount: count,
+          firstSeen,
+          lastSeen,
+          batchId,
+          cameraName: cam,
+        })
+      }
+    })
+
+    // 2. Profiles (Enrolled staff, VIPs with footage sightings or active enrollments)
+    profiles.forEach(p => {
+      const pDets = rawDets.filter(d => d.profileId === p.id)
+      const bestThumb = pDets[0]?.faceImage || null
+      const count = pDets.length > 0 ? pDets.length : (p.embeddingCount || 0)
+      const firstSeen = pDets[0]?.timestamp || (p.lastSeen ? String(p.lastSeen) : undefined)
+      const lastSeen = pDets[pDets.length - 1]?.timestamp || (p.lastSeen ? String(p.lastSeen) : undefined)
+      const batchId = pDets[0]?.batchId || null
+      const cam = pDets[0]?.cameraName || null
+
+      if (selectedBatchId === 'all' || pDets.length > 0 || !batchId || batchId === selectedBatchId) {
+        list.push({
+          id: p.id,
+          name: p.name,
+          role: p.role || 'visitor',
+          type: 'profile',
+          thumbnail: bestThumb,
+          sightingCount: count,
+          firstSeen,
+          lastSeen,
+          batchId,
+          cameraName: cam,
+        })
+      }
+    })
+
+    return list.sort((a, b) => b.sightingCount - a.sightingCount)
+  }, [unregistered, profiles, archiveLogs, selectedBatchId])
+
+  const filteredClipVectors = useMemo(() => {
+    if (!dropdownSearch) return clipVectors
+    const q = dropdownSearch.toLowerCase()
+    return clipVectors.filter(v =>
+      v.name.toLowerCase().includes(q) || v.id.toLowerCase().includes(q) || v.role.toLowerCase().includes(q)
+    )
+  }, [clipVectors, dropdownSearch])
+
+  const selectedClipVector = useMemo(() => {
+    return clipVectors.find(v => v.id === selectedKnownVectorId) || null
+  }, [clipVectors, selectedKnownVectorId])
+
+  const handleSelectClipVector = (v: ClipVectorItem) => {
+    setSelectedKnownVectorId(v.id)
+    setIsVectorDropdownOpen(false)
+
+    // If time is not locked, auto-sync to this vector's recorded time window!
+    if (!isTimeLocked) {
+      if (v.firstSeen && v.lastSeen) {
+        const start = new Date(v.firstSeen)
+        const end = new Date(v.lastSeen)
+        const fromDate = new Date(start.getTime() - 5 * 60 * 1000)
+        const toDate = new Date(end.getTime() + 5 * 60 * 1000)
+        setDateFrom(toLocalDatetimeString(fromDate))
+        setDateTo(toLocalDatetimeString(toDate))
+        setTimeRange('custom')
+      } else {
+        const batch = importBatches.find(b => b.id === (v.batchId || selectedBatchId))
+        if (batch?.footageStart && batch?.footageEnd) {
+          setDateFrom(toLocalDatetimeString(batch.footageStart))
+          setDateTo(toLocalDatetimeString(batch.footageEnd))
+          setTimeRange('custom')
+        }
+      }
+    }
+  }
+
+  const applyTimePreset = (preset: 'clip' | '15m' | '1h' | '24h') => {
+    const curFrom = dateFrom ? new Date(dateFrom) : new Date()
+
+    if (preset === 'clip') {
+      const batch = importBatches.find(b => b.id === selectedBatchId) || importBatches[0]
+      if (batch?.footageStart && batch?.footageEnd) {
+        setDateFrom(toLocalDatetimeString(batch.footageStart))
+        setDateTo(toLocalDatetimeString(batch.footageEnd))
+        setTimeRange('custom')
+        return
+      }
+      if (selectedClipVector?.firstSeen && selectedClipVector?.lastSeen) {
+        setDateFrom(toLocalDatetimeString(selectedClipVector.firstSeen))
+        setDateTo(toLocalDatetimeString(selectedClipVector.lastSeen))
+        setTimeRange('custom')
+        return
+      }
+    } else if (preset === '15m') {
+      const center = selectedClipVector?.firstSeen ? new Date(selectedClipVector.firstSeen) : curFrom
+      const f = new Date(center.getTime() - 15 * 60 * 1000)
+      const t = new Date(center.getTime() + 15 * 60 * 1000)
+      setDateFrom(toLocalDatetimeString(f))
+      setDateTo(toLocalDatetimeString(t))
+      setTimeRange('custom')
+      return
+    } else if (preset === '1h') {
+      const center = selectedClipVector?.firstSeen ? new Date(selectedClipVector.firstSeen) : curFrom
+      const f = new Date(center.getTime() - 60 * 60 * 1000)
+      const t = new Date(center.getTime() + 60 * 60 * 1000)
+      setDateFrom(toLocalDatetimeString(f))
+      setDateTo(toLocalDatetimeString(t))
+      setTimeRange('custom')
+      return
+    } else if (preset === '24h') {
+      const { from, to } = getRangeDates('24h')
+      setDateFrom(from)
+      setDateTo(to)
+      setTimeRange('24h')
+    }
   }
 
   const knownVectors = useMemo(() => {
@@ -301,36 +488,262 @@ export function ForensicTab() {
           
           <div className="space-y-2">
             <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Search Source</Label>
-            <div className="grid grid-cols-2 gap-1 bg-muted p-1 rounded-md">
+            <div className="grid grid-cols-3 gap-1 bg-muted p-1 rounded-md">
               <button 
-                className={cn("text-xs py-1.5 rounded transition-colors", searchSource === 'probe' ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}
-                onClick={() => setSearchSource('probe')}
+                type="button"
+                className={cn(
+                  "text-xs py-1.5 rounded transition-colors font-medium flex items-center justify-center gap-1",
+                  searchSource === 'clip' ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setSearchSource('clip')}
               >
-                Probe Image
+                <Film className="size-3" /> Clip Vectors
               </button>
               <button 
-                className={cn("text-xs py-1.5 rounded transition-colors", searchSource === 'known' ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}
+                type="button"
+                className={cn(
+                  "text-xs py-1.5 rounded transition-colors font-medium flex items-center justify-center gap-1",
+                  searchSource === 'known' ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
                 onClick={() => setSearchSource('known')}
               >
-                Known Vector
+                <User className="size-3" /> Gallery
+              </button>
+              <button 
+                type="button"
+                className={cn(
+                  "text-xs py-1.5 rounded transition-colors font-medium flex items-center justify-center gap-1",
+                  searchSource === 'probe' ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setSearchSource('probe')}
+              >
+                <ImageUp className="size-3" /> Probe
               </button>
             </div>
           </div>
 
-          {searchSource === 'probe' ? (
-            <div className="space-y-2">
-              <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Probe Image</Label>
-              <Dropzone file={file} onFile={setFile} onClear={() => setFile(null)} />
+          {/* 1. Clip / Ingested Vectors Selector */}
+          {searchSource === 'clip' && (
+            <div className="space-y-3">
+              {/* Batch / Clip Selector */}
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Film className="size-3 text-info" /> CCTV Clip / Batch
+                  </span>
+                  <span className="text-[10px] text-muted-foreground font-mono">
+                    {importBatches.length} {importBatches.length === 1 ? 'batch' : 'batches'}
+                  </span>
+                </Label>
+                <div className="relative">
+                  <select
+                    value={selectedBatchId}
+                    onChange={(e) => setSelectedBatchId(e.target.value)}
+                    className="w-full bg-background border border-border rounded-md text-xs pl-3 pr-8 py-2 text-foreground focus:outline-none focus:ring-1 focus:ring-info font-medium"
+                  >
+                    <option value="all">All Ingested Footage ({clipVectors.length} vectors)</option>
+                    {importBatches.map(b => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} ({b.totalDetections} detections)
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+                </div>
+              </div>
+
+              {/* Recognized Vectors in Clip Dropdown */}
+              <div className="space-y-1.5 relative" ref={dropdownRef}>
+                <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <UserCheck className="size-3 text-info" /> Recognized Vectors
+                  </span>
+                  <span className="text-[10px] text-info font-mono">
+                    {filteredClipVectors.length} in clip
+                  </span>
+                </Label>
+
+                {/* Dropdown Trigger */}
+                <button
+                  type="button"
+                  onClick={() => setIsVectorDropdownOpen(!isVectorDropdownOpen)}
+                  className="w-full flex items-center justify-between gap-2 p-2 bg-background border border-border rounded-md hover:border-info/50 transition-colors text-left"
+                >
+                  {selectedClipVector ? (
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {selectedClipVector.thumbnail ? (
+                        <img
+                          src={selectedClipVector.thumbnail.startsWith('data:') ? selectedClipVector.thumbnail : `data:image/jpeg;base64,${selectedClipVector.thumbnail}`}
+                          alt={selectedClipVector.name}
+                          className="size-7 rounded object-cover ring-1 ring-info/50 shrink-0"
+                        />
+                      ) : (
+                        <div className="size-7 rounded bg-muted flex items-center justify-center shrink-0">
+                          <User className="size-3.5 text-muted-foreground" />
+                        </div>
+                      )}
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-semibold text-foreground truncate">{selectedClipVector.name}</span>
+                          <span className={cn(
+                            "text-[8px] px-1 rounded font-mono uppercase",
+                            selectedClipVector.role === 'vip' ? "bg-amber-500/10 text-amber-400 border border-amber-500/30" :
+                            selectedClipVector.role === 'employee' ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30" :
+                            "bg-muted text-muted-foreground"
+                          )}>
+                            {selectedClipVector.role}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {selectedClipVector.sightingCount} sightings in clip
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Select recognized vector from clip...</span>
+                  )}
+                  <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform shrink-0", isVectorDropdownOpen && "rotate-180")} />
+                </button>
+
+                {/* Dropdown Menu */}
+                {isVectorDropdownOpen && (
+                  <div className="absolute top-full left-0 right-0 z-50 mt-1 flex flex-col max-h-64 overflow-y-auto border border-border rounded-md bg-card shadow-2xl p-1.5">
+                    <div className="p-1 mb-1 relative sticky top-0 bg-card z-10 border-b border-border/50">
+                      <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+                      <Input
+                        placeholder="Search persons in clip..."
+                        value={dropdownSearch}
+                        onChange={(e) => setDropdownSearch(e.target.value)}
+                        className="pl-8 h-7 text-xs bg-background"
+                        autoFocus
+                      />
+                    </div>
+
+                    {filteredClipVectors.length === 0 ? (
+                      <div className="p-3 text-center text-xs text-muted-foreground">
+                        No vectors found matching &quot;{dropdownSearch}&quot;
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-0.5">
+                        {filteredClipVectors.map(v => (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => handleSelectClipVector(v)}
+                            className={cn(
+                              "flex items-center gap-2 p-1.5 rounded hover:bg-muted transition-colors text-left",
+                              selectedKnownVectorId === v.id && "bg-info/10 border border-info/30"
+                            )}
+                          >
+                            {v.thumbnail ? (
+                              <img
+                                src={v.thumbnail.startsWith('data:') ? v.thumbnail : `data:image/jpeg;base64,${v.thumbnail}`}
+                                alt={v.name}
+                                className="size-7 rounded object-cover ring-1 ring-border shrink-0"
+                              />
+                            ) : (
+                              <div className="size-7 rounded bg-muted flex items-center justify-center shrink-0">
+                                <User className="size-3.5 text-muted-foreground" />
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-medium text-foreground truncate">{v.name}</span>
+                                <span className={cn(
+                                  "text-[8px] px-1 rounded font-mono uppercase",
+                                  v.role === 'vip' ? "bg-amber-500/10 text-amber-400" :
+                                  v.role === 'employee' ? "bg-emerald-500/10 text-emerald-400" :
+                                  "bg-muted text-muted-foreground"
+                                )}>
+                                  {v.role}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-[10px] text-muted-foreground mt-0.5">
+                                <span>{v.sightingCount} sightings</span>
+                                {v.firstSeen && (
+                                  <span className="font-mono text-[9px]">{formatTime(v.firstSeen)}</span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Selected Vector Summary Probe Card */}
+              {selectedClipVector && (
+                <div className="border border-info/40 bg-info/5 rounded-lg p-2.5 relative flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-info flex items-center gap-1">
+                      <Sparkles className="size-3" /> Active Forensic Probe Vector
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedKnownVectorId(null)}
+                      className="text-muted-foreground hover:text-destructive text-xs"
+                      title="Clear probe vector"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    {selectedClipVector.thumbnail && (
+                      <img
+                        src={selectedClipVector.thumbnail.startsWith('data:') ? selectedClipVector.thumbnail : `data:image/jpeg;base64,${selectedClipVector.thumbnail}`}
+                        alt={selectedClipVector.name}
+                        className="size-11 rounded-md object-cover ring-2 ring-info/50 shadow shrink-0"
+                      />
+                    )}
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-bold text-foreground truncate">{selectedClipVector.name}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground truncate">{selectedClipVector.id}</span>
+                      <span className="text-[10px] text-emerald-400 flex items-center gap-1 mt-0.5 font-medium">
+                        <Check className="size-2.5 text-emerald-400" /> 512-D Vector Ready
+                      </span>
+                    </div>
+                  </div>
+                  {selectedClipVector.firstSeen && (
+                    <div className="pt-1.5 border-t border-border/40 flex items-center justify-between text-[10px]">
+                      <span className="text-muted-foreground font-mono">
+                        Seen: {formatTime(selectedClipVector.firstSeen)} → {formatTime(selectedClipVector.lastSeen || selectedClipVector.firstSeen)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedClipVector.firstSeen && selectedClipVector.lastSeen) {
+                            const start = new Date(selectedClipVector.firstSeen)
+                            const end = new Date(selectedClipVector.lastSeen)
+                            const fromDate = new Date(start.getTime() - 5 * 60 * 1000)
+                            const toDate = new Date(end.getTime() + 5 * 60 * 1000)
+                            setDateFrom(toLocalDatetimeString(fromDate))
+                            setDateTo(toLocalDatetimeString(toDate))
+                            setTimeRange('custom')
+                          }
+                        }}
+                        className="text-info hover:underline font-medium"
+                      >
+                        Snap Time Window
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          ) : (
+          )}
+
+          {/* 2. Known Gallery Vector Search */}
+          {searchSource === 'known' && (
             <div className="space-y-2">
-              <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Known Vector</Label>
+              <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Enrolled Gallery Vector</Label>
               {!selectedKnownVector ? (
                 <div className="space-y-2 relative">
                   <div className="relative">
                     <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
                     <Input 
-                      placeholder="Search known vectors..." 
+                      placeholder="Search gallery vectors..." 
                       className="pl-9 h-9 text-xs" 
                       value={vectorSearchQuery}
                       onChange={e => setVectorSearchQuery(e.target.value)}
@@ -372,29 +785,87 @@ export function ForensicTab() {
             </div>
           )}
 
-          <div className="space-y-3">
+          {/* 3. Probe Image Upload */}
+          {searchSource === 'probe' && (
+            <div className="space-y-2">
+              <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Probe Image</Label>
+              <Dropzone file={file} onFile={setFile} onClear={() => setFile(null)} />
+            </div>
+          )}
+
+          {/* Time Window with Lock & Dynamic Presets */}
+          <div className="space-y-2.5">
             <div className="flex items-center justify-between">
-              <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Date / Time</Label>
+              <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="size-3 text-info" /> Time Window
+              </Label>
+              <button
+                type="button"
+                onClick={() => setIsTimeLocked(!isTimeLocked)}
+                className={cn(
+                  "text-[10px] px-2 py-0.5 rounded flex items-center gap-1 border transition-colors",
+                  isTimeLocked 
+                    ? "border-amber-500/50 bg-amber-500/15 text-amber-400 font-medium" 
+                    : "border-border text-muted-foreground hover:text-foreground"
+                )}
+                title={isTimeLocked ? "Time window is locked: switching vectors keeps this exact time" : "Time window auto-syncs when switching vectors"}
+              >
+                {isTimeLocked ? <Lock className="size-2.5 text-amber-400" /> : <Unlock className="size-2.5" />}
+                {isTimeLocked ? "Locked" : "Unlocked"}
+              </button>
             </div>
+
             <div className="grid grid-cols-4 gap-1">
-              {(['1h', '6h', '24h', 'custom'] as const).map(r => (
-                <Chip key={r} active={timeRange === r} onClick={() => setTimeRange(r)} className="px-1 text-[10px]">
-                  {r === 'custom' ? 'Custom' : `Last ${r}`}
-                </Chip>
-              ))}
+              <Chip active={false} onClick={() => applyTimePreset('clip')} className="px-1 text-[10px]">
+                Clip Span
+              </Chip>
+              <Chip active={false} onClick={() => applyTimePreset('15m')} className="px-1 text-[10px]">
+                ±15m
+              </Chip>
+              <Chip active={false} onClick={() => applyTimePreset('1h')} className="px-1 text-[10px]">
+                ±1 Hour
+              </Chip>
+              <Chip active={timeRange === '24h'} onClick={() => applyTimePreset('24h')} className="px-1 text-[10px]">
+                Last 24h
+              </Chip>
             </div>
-            {timeRange === 'custom' && (
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <div className="space-y-1">
-                  <Label className="text-[10px] text-muted-foreground">From</Label>
-                  <Input type="datetime-local" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-7 text-[10px] px-2" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-[10px] text-muted-foreground">To</Label>
-                  <Input type="datetime-local" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-7 text-[10px] px-2" />
-                </div>
+
+            <div className="grid grid-cols-2 gap-2 mt-1">
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground flex items-center justify-between">
+                  <span>From</span>
+                  {isTimeLocked && <Lock className="size-2 text-amber-400" />}
+                </Label>
+                <Input
+                  type="datetime-local"
+                  value={dateFrom}
+                  onChange={(e) => { setDateFrom(e.target.value); setTimeRange('custom') }}
+                  className="h-7 text-[10px] px-2 font-mono"
+                />
               </div>
-            )}
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground flex items-center justify-between">
+                  <span>To</span>
+                  {isTimeLocked && <Lock className="size-2 text-amber-400" />}
+                </Label>
+                <Input
+                  type="datetime-local"
+                  value={dateTo}
+                  onChange={(e) => { setDateTo(e.target.value); setTimeRange('custom') }}
+                  className="h-7 text-[10px] px-2 font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Scope Summary Badge */}
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground bg-muted/40 px-2 py-1 rounded border border-border/40">
+              <span className="truncate font-mono">
+                {dateFrom ? dateFrom.replace('T', ' ') : '--'} → {dateTo ? dateTo.replace('T', ' ') : '--'}
+              </span>
+              <span className={cn("text-[9px] font-mono shrink-0 ml-1 font-medium", isTimeLocked ? "text-amber-400" : "text-info")}>
+                {isTimeLocked ? "🔒 LOCKED" : "⚡ AUTO"}
+              </span>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -420,18 +891,18 @@ export function ForensicTab() {
             <Button
               onClick={() => {
                 if (searchSource === 'probe' && !file) return
-                if (searchSource === 'known' && !selectedKnownVectorId) return
+                if ((searchSource === 'known' || searchSource === 'clip') && !selectedKnownVectorId) return
                 
                 search.mutate({
                   imageFile: searchSource === 'probe' ? (file || undefined) : undefined,
-                  profileId: searchSource === 'known' ? (selectedKnownVectorId || undefined) : undefined,
+                  profileId: (searchSource === 'known' || searchSource === 'clip') ? (selectedKnownVectorId || undefined) : undefined,
                   from: dateFrom,
                   to: dateTo,
                   cameraIds: selectedCameras.length > 0 ? selectedCameras : undefined,
                   gender: gender === 'all' ? undefined : gender,
                 })
               }}
-              disabled={(searchSource === 'probe' && !file) || (searchSource === 'known' && !selectedKnownVectorId) || search.isPending}
+              disabled={(searchSource === 'probe' && !file) || ((searchSource === 'known' || searchSource === 'clip') && !selectedKnownVectorId) || search.isPending}
               className="w-full bg-info hover:bg-info/90 text-info-foreground shadow-[0_0_15px_color-mix(in_oklch,var(--color-info)_30%,transparent)]"
             >
               <ScanSearch className="mr-2 size-4" />

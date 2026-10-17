@@ -3,12 +3,12 @@ from fastapi import APIRouter, File, UploadFile, Form, Depends, Query, HTTPExcep
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, extract, text, case, select, or_
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Optional, List, Any
 import uuid
 
 from database import get_db
 from models import (
-    Camera, Profile, Detection, CameraTransition, Alert,
+    Camera, Profile, Detection, CameraTransition, Alert, UnregisteredSubject,
     ProfileRole as ProfileRoleEnum, DetectionStatus as DetectionStatusEnum
 )
 from schemas import (
@@ -151,46 +151,84 @@ def get_duplicates(db: Session = Depends(get_db)):
 
 @router.get("/trajectory", response_model=SubjectTrajectoryResponse)
 def get_trajectory(profileId: str = Query(...), hours: int = Query(24), db: Session = Depends(get_db)):
-    start_time = datetime.now(IST) - timedelta(hours=hours)
+    start_time = datetime.now(IST) - timedelta(hours=hours) if hours > 0 else None
     
-    profile = db.query(Profile).filter(Profile.id == profileId).first()
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-        
-    detections = db.query(Detection).options(
-        joinedload(Detection.camera)
-    ).filter(
-        Detection.profile_id == profileId,
-        Detection.timestamp >= start_time
-    ).order_by(Detection.timestamp.asc()).all()
+    # 1. Check Profile
+    profile = db.query(Profile).filter(
+        (Profile.id == profileId) | (func.lower(Profile.name) == func.lower(profileId))
+    ).first()
     
-    path = []
-    for d in detections:
-        path.append(TrajectoryNodeResponse(
-            cameraId=d.camera_id,
-            cameraName=d.camera.name if d.camera else "Unknown",
-            zone=d.camera.zone if d.camera else "General",
-            timestamp=to_ist(d.timestamp),
-            confidence=d.confidence,
-            snapshotTone=snapshot_tone_for(d.id),
-        ))
-        
-    return SubjectTrajectoryResponse(
-        profileId=profileId,
-        profileName=profile.name,
-        role=profile.role.value if hasattr(profile.role, 'value') else str(profile.role or "visitor"),
-        path=path
-    )
+    if profile:
+        det_query = db.query(Detection).options(joinedload(Detection.camera)).filter(
+            Detection.profile_id == profile.id
+        )
+        if start_time is not None:
+            time_bounded = det_query.filter(Detection.timestamp >= start_time).order_by(Detection.timestamp.asc()).all()
+            detections = time_bounded if time_bounded else det_query.order_by(Detection.timestamp.asc()).all()
+        else:
+            detections = det_query.order_by(Detection.timestamp.asc()).all()
+
+        path = [
+            TrajectoryNodeResponse(
+                cameraId=d.camera_id,
+                cameraName=d.camera.name if d.camera else "Unknown",
+                zone=d.camera.zone if d.camera else "General",
+                timestamp=to_ist(d.timestamp),
+                confidence=d.confidence,
+                snapshotTone=snapshot_tone_for(d.id),
+            )
+            for d in detections
+        ]
+        return SubjectTrajectoryResponse(
+            profileId=profile.id,
+            profileName=profile.name,
+            role=profile.role.value if hasattr(profile.role, 'value') else str(profile.role or "visitor"),
+            path=path
+        )
+
+    # 2. Check Unregistered Subject
+    unreg = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == profileId) | (UnregisteredSubject.display_name == profileId)
+    ).first()
+    if unreg:
+        det_query = db.query(Detection).options(joinedload(Detection.camera)).filter(
+            (Detection.unregistered_subject_id == unreg.id) | (Detection.profile_id == unreg.id)
+        )
+        if start_time is not None:
+            time_bounded = det_query.filter(Detection.timestamp >= start_time).order_by(Detection.timestamp.asc()).all()
+            detections = time_bounded if time_bounded else det_query.order_by(Detection.timestamp.asc()).all()
+        else:
+            detections = det_query.order_by(Detection.timestamp.asc()).all()
+
+        path = [
+            TrajectoryNodeResponse(
+                cameraId=d.camera_id,
+                cameraName=d.camera.name if d.camera else "Unknown",
+                zone=d.camera.zone if d.camera else "General",
+                timestamp=to_ist(d.timestamp),
+                confidence=d.confidence,
+                snapshotTone=snapshot_tone_for(d.id),
+            )
+            for d in detections
+        ]
+        return SubjectTrajectoryResponse(
+            profileId=unreg.id,
+            profileName=unreg.display_name,
+            role="visitor",
+            path=path
+        )
+
+    raise HTTPException(status_code=404, detail="Subject or profile not found")
 
 
 def _normalize_datetime_filter(dt: Any) -> Optional[datetime]:
-    """Convert input datetime to naive UTC timestamp for database comparison."""
+    """Convert input datetime to naive IST timestamp matching database storage."""
     if dt is None:
         return None
     if not isinstance(dt, datetime):
         return None
     if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.astimezone(IST).replace(tzinfo=None)
     return dt
 
 
@@ -199,6 +237,8 @@ def get_footfall(
     days: int = Query(7, description="Number of days to look back from today (used if date_from/date_to not provided)"),
     date_from: Optional[datetime] = Query(None, description="Start date (inclusive) in IST"),
     date_to: Optional[datetime] = Query(None, description="End date (inclusive) in IST"),
+    source: Optional[str] = Query(None, description="Filter by data source: 'live' or 'archive'"),
+    batch_id: Optional[str] = Query(None, description="Filter by specific archive batch ID"),
     db: Session = Depends(get_db)
 ):
     norm_from = _normalize_datetime_filter(date_from)
@@ -216,26 +256,34 @@ def get_footfall(
         else:
             end_time = norm_from + timedelta(days=7)
     else:
-        # Fall back to default days (converted to naive UTC)
-        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-        start_time = now_utc - timedelta(days=days)
-        end_time = now_utc
+        if source == "archive" or batch_id:
+            start_time = datetime(1970, 1, 1)
+            end_time = datetime(2099, 12, 31)
+        else:
+            # Fall back to default days (converted to naive IST)
+            now_ist = datetime.now(IST).replace(tzinfo=None)
+            start_time = now_ist - timedelta(days=days)
+            end_time = now_ist
 
-    detections = db.query(
+    q = db.query(
         Detection.timestamp,
         Detection.status
     ).filter(
         Detection.timestamp >= start_time,
         Detection.timestamp <= end_time
-    ).all()
+    )
+    if source:
+        q = q.filter(Detection.source == source)
+    if batch_id:
+        q = q.filter(Detection.batch_id == batch_id)
+
+    detections = q.all()
 
     buckets = {}
     for d in detections:
-        # Ensure timestamp is treated as IST (database stores UTC)
-        if d.timestamp.tzinfo is None:
-            ts = d.timestamp.replace(tzinfo=timezone.utc).astimezone(IST)
-        else:
-            ts = d.timestamp.astimezone(IST)
+        ts = to_ist(d.timestamp)
+        if ts is None:
+            continue
             
         hour_str = f"{ts.hour:02d}:00"
         if hour_str not in buckets:
@@ -264,6 +312,8 @@ def get_footfall(
 def get_age_distribution(
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
+    source: Optional[str] = Query(None),
+    batch_id: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     norm_from = _normalize_datetime_filter(date_from)
@@ -282,6 +332,10 @@ def get_age_distribution(
         subq = subq.filter(Detection.timestamp >= norm_from)
     if norm_to:
         subq = subq.filter(Detection.timestamp <= norm_to)
+    if source:
+        subq = subq.filter(Detection.source == source)
+    if batch_id:
+        subq = subq.filter(Detection.batch_id == batch_id)
     
     subq = subq.distinct(subject_id_col).subquery()
 
@@ -303,6 +357,8 @@ def get_age_distribution(
 def get_gender_distribution(
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
+    source: Optional[str] = Query(None),
+    batch_id: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     norm_from = _normalize_datetime_filter(date_from)
@@ -321,6 +377,10 @@ def get_gender_distribution(
         subq = subq.filter(Detection.timestamp >= norm_from)
     if norm_to:
         subq = subq.filter(Detection.timestamp <= norm_to)
+    if source:
+        subq = subq.filter(Detection.source == source)
+    if batch_id:
+        subq = subq.filter(Detection.batch_id == batch_id)
     
     subq = subq.distinct(subject_id_col).subquery()
 
@@ -338,6 +398,8 @@ def get_attendance(
     days: int = Query(7),
     date_from: Optional[datetime] = Query(None, description="Start date (inclusive) in IST"),
     date_to: Optional[datetime] = Query(None, description="End date (inclusive) in IST"),
+    source: Optional[str] = Query(None),
+    batch_id: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     norm_from = _normalize_datetime_filter(date_from)
@@ -353,11 +415,15 @@ def get_attendance(
         else:
             end_time = norm_from + timedelta(days=7)
     else:
-        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-        start_time = now_utc - timedelta(days=days)
-        end_time = now_utc
+        if source == "archive" or batch_id:
+            start_time = datetime(1970, 1, 1)
+            end_time = datetime(2099, 12, 31)
+        else:
+            now_ist = datetime.now(IST).replace(tzinfo=None)
+            start_time = now_ist - timedelta(days=days)
+            end_time = now_ist
     
-    results = db.query(
+    att_q = db.query(
         Detection.profile_id,
         Detection.unregistered_subject_id,
         func.min(Detection.timestamp).label('check_in'),
@@ -367,7 +433,13 @@ def get_attendance(
         (Detection.profile_id != None) | (Detection.unregistered_subject_id != None),
         Detection.timestamp >= start_time,
         Detection.timestamp <= end_time
-    ).group_by(Detection.profile_id, Detection.unregistered_subject_id).all()
+    )
+    if source:
+        att_q = att_q.filter(Detection.source == source)
+    if batch_id:
+        att_q = att_q.filter(Detection.batch_id == batch_id)
+
+    results = att_q.group_by(Detection.profile_id, Detection.unregistered_subject_id).all()
 
     if not results:
         return []
@@ -376,7 +448,6 @@ def get_attendance(
     unreg_ids = [r.unregistered_subject_id for r in results if r.unregistered_subject_id]
     
     profiles = {p.id: p for p in db.query(Profile).filter(Profile.id.in_(profile_ids)).all()} if profile_ids else {}
-    from models import UnregisteredSubject
     unregs = {u.id: u for u in db.query(UnregisteredSubject).filter(UnregisteredSubject.id.in_(unreg_ids)).all()} if unreg_ids else {}
 
     records = []

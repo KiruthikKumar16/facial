@@ -222,16 +222,26 @@ async def run_forensic_search(
             )
         target_embedding = target_embedding_raw.tolist()
     else:
-        # Load embedding from known profile/vector
-        profile = db.query(Profile).filter(Profile.id == profile_id).first()
+        # Load embedding from known profile, unregistered subject, or detection vector
+        profile = db.query(Profile).filter(
+            (Profile.id == profile_id) | (func.lower(Profile.name) == func.lower(profile_id))
+        ).first()
         if profile and profile.embeddings:
             target_embedding = profile.embeddings[0].vector
         else:
-            unreg = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == profile_id).first()
+            unreg = db.query(UnregisteredSubject).filter(
+                (UnregisteredSubject.id == profile_id) | (UnregisteredSubject.display_name == profile_id)
+            ).first()
             if unreg and unreg.representative_embedding is not None:
                 target_embedding = unreg.representative_embedding
             else:
-                raise HTTPException(status_code=404, detail="Selected vector not found or has no embedding.")
+                det = db.query(Detection).filter(
+                    (Detection.id == profile_id) | (Detection.event_id == profile_id)
+                ).first()
+                if det and det.embedding_vector is not None:
+                    target_embedding = det.embedding_vector
+                else:
+                    raise HTTPException(status_code=404, detail="Selected vector not found or has no embedding.")
 
     return run_forensic_vector_query(
         db=db,
@@ -380,8 +390,47 @@ def run_forensic_vector_query(
                 avatarTone=snapshot_tone_for(profile.id),
             )
         )
-        if len(matches) >= 10:
-            break
-    return matches
+
+    # Also search active unregistered subjects in database
+    target_vec = np.asarray(target_embedding, dtype=np.float32).flatten()
+    target_norm = float(np.linalg.norm(target_vec) + 1e-10)
+    unregs = db.query(UnregisteredSubject).filter(
+        UnregisteredSubject.status == "active",
+        UnregisteredSubject.representative_embedding.isnot(None),
+    ).all()
+    for u in unregs:
+        if u.id in seen:
+            continue
+        try:
+            u_vec = np.asarray(u.representative_embedding, dtype=np.float32).flatten()
+            if u_vec.size == 512:
+                u_norm = float(np.linalg.norm(u_vec) + 1e-10)
+                sim = float(np.dot(target_vec, u_vec) / (target_norm * u_norm))
+                dist = 1.0 - sim
+                if dist <= max_distance:
+                    seen.add(u.id)
+                    latest_d_q = db.query(Detection).filter(
+                        Detection.unregistered_subject_id == u.id
+                    )
+                    if detection_filters:
+                        latest_d_q = latest_d_q.filter(*detection_filters)
+                    latest_d = latest_d_q.order_by(Detection.timestamp.desc()).first()
+                    matches.append(
+                        ForensicMatchResponse(
+                            profile_id=u.id,
+                            profile_name=u.display_name,
+                            role="visitor",
+                            match_score=round(max(0.0, min(1.0, sim)), 4),
+                            embeddings_matched=u.capture_count or 1,
+                            last_seen=latest_d.timestamp if latest_d else u.last_seen,
+                            camera_name=latest_d.camera.name if (latest_d and latest_d.camera) else "Archive Camera",
+                            avatarTone=snapshot_tone_for(u.id),
+                        )
+                    )
+        except Exception:
+            continue
+
+    matches.sort(key=lambda m: m.match_score, reverse=True)
+    return matches[:15]
 
 

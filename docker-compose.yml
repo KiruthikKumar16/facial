@@ -48,13 +48,18 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379/0
       PORT: 1223
-      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001
       SECRET_KEY: ${SECRET_KEY}
       EDGE_API_KEY: ${EDGE_API_KEY}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       DEBUG: "false"
       ENABLE_FORENSIC_SEARCH: "true"
       TZ: Asia/Kolkata
+    volumes:
+      - ./backend:/app/backend
+      - ./facial_recognition:/app/facial_recognition
+      - "D:/:/d"
+      - "C:/:/c"
     ports:
       - "1223:1223"
     healthcheck:

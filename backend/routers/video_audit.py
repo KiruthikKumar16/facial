@@ -10,14 +10,20 @@ Provides API endpoints for:
 from __future__ import annotations
 
 import logging
+import os
+import re
 import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from database import get_db
+import models
+from schemas import ImportBatchResponse
 from facial_recognition.batch_video_ingest import get_global_ingest_engine, IngestionProgress
 from facial_recognition.video_auditor import VideoAuditor, VideoAuditReport
 
@@ -31,6 +37,32 @@ _audit_lock = threading.Lock()
 _ingestion_thread: Optional[threading.Thread] = None
 
 
+def resolve_directory_path(dir_str: str) -> Path:
+    """Resolve a directory path, translating Windows drive letters if running in a Linux/Docker environment."""
+    raw = str(dir_str).strip()
+    p = Path(raw)
+    if p.exists():
+        return p.resolve()
+
+    # Translate Windows drive letter paths on Linux/Docker (e.g. D:\DBGT POC -> /d/DBGT POC)
+    clean = raw.replace("\\", "/")
+    m = re.match(r"^([a-zA-Z]):[/\\]?(.*)", clean)
+    if m:
+        drive = m.group(1).lower()
+        sub = m.group(2).strip("/")
+        candidates = [
+            Path(f"/{drive}/{sub}"),
+            Path(f"/mnt/{drive}/{sub}"),
+            Path(f"/media/{drive}/{sub}"),
+            Path(f"/host/{drive}/{sub}"),
+        ]
+        for c in candidates:
+            if c.exists():
+                return c.resolve()
+
+    return p.resolve()
+
+
 class ScanRequest(BaseModel):
     directory: str = Field(..., description="Absolute path to CCTV footage directory or hard drive")
     tolerance_seconds: float = Field(5.0, description="Allowable gap in seconds before flagging as missing footage")
@@ -42,6 +74,113 @@ class IngestRequest(BaseModel):
     sample_fps: float = Field(3.0, description="Frames per second to sample (default: 3.0 FPS for fast 10-15x scan)")
     threshold: float = Field(0.60, description="Face recognition confidence threshold")
     use_gpu: bool = Field(False, description="Enable GPU acceleration if available")
+    batch_name: Optional[str] = Field(None, description="Optional descriptive label for this import batch")
+    enable_motion_gating: bool = Field(True, description="Skip static night/empty scenes for 3x speedup while preserving detections")
+    max_workers: Optional[int] = Field(None, description="Max parallel camera workers (None = auto-scale based on free VRAM)")
+    live_reserve_mb: int = Field(6144, description="VRAM in MB reserved exclusively for concurrent live surveillance")
+
+
+@router.get("/browse", response_model=Dict[str, Any])
+def browse_directories(path: Optional[str] = Query(None, description="Path to inspect")):
+    """
+    List available drives or subdirectories containing video footage.
+    Allows dashboard users to visually select CCTV folders without typing absolute paths.
+    """
+    results = []
+    current_path = ""
+    parent_path = None
+
+    if not path or not path.strip():
+        if os.name == "nt":
+            import string
+            for letter in string.ascii_uppercase:
+                drive = f"{letter}:\\"
+                if os.path.exists(drive):
+                    results.append({"name": f"{letter}: Drive", "path": drive, "is_drive": True, "has_videos": False})
+        else:
+            for letter in ["c", "d", "e", "f"]:
+                mount = Path(f"/{letter}")
+                if mount.exists():
+                    results.append({
+                        "name": f"{letter.upper()}: Drive",
+                        "path": f"{letter.upper()}:\\",
+                        "container_path": str(mount),
+                        "is_drive": True,
+                        "has_videos": False,
+                    })
+            if not results:
+                results.append({"name": "Current Workspace (/app)", "path": "/app", "is_drive": True, "has_videos": False})
+    else:
+        resolved = resolve_directory_path(path)
+        if not resolved.exists() or not resolved.is_dir():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Directory not found: {path}")
+
+        current_path = str(resolved)
+        parent_path = str(resolved.parent) if resolved.parent != resolved else None
+
+        VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".ts", ".webm"}
+        try:
+            for item in sorted(resolved.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                if item.name.startswith(".") or item.name.startswith("$") or "System Volume Information" in item.name:
+                    continue
+                if item.is_dir():
+                    has_vids = False
+                    try:
+                        for sub in item.iterdir():
+                            if sub.suffix.lower() in VIDEO_EXTS:
+                                has_vids = True
+                                break
+                    except Exception:
+                        pass
+
+                    display_path = str(item)
+                    m = re.match(r"^/([a-zA-Z])/(.*)", str(item))
+                    if m:
+                        sub_win = m.group(2).replace('/', '\\')
+                        display_path = f"{m.group(1).upper()}:\\{sub_win}"
+
+                    results.append({
+                        "name": item.name,
+                        "path": display_path,
+                        "is_dir": True,
+                        "has_videos": has_vids,
+                    })
+        except Exception as exc:
+            logger.warning("Error reading directory %s: %s", resolved, exc)
+
+    return {
+        "current_path": current_path,
+        "parent_path": parent_path,
+        "items": results,
+    }
+
+
+@router.get("/locate", response_model=Dict[str, Any])
+def locate_folder(name: str = Query(..., description="Folder name to search for")):
+    """Locate a folder name across available drives to auto-complete folder selections."""
+    name_clean = name.strip().strip("/\\")
+    candidates = []
+
+    if os.name == "nt":
+        for letter in ["D", "C", "E"]:
+            p = Path(f"{letter}:\\{name_clean}")
+            if p.exists() and p.is_dir():
+                candidates.append(str(p))
+    else:
+        for letter in ["d", "c", "e"]:
+            p = Path(f"/{letter}/{name_clean}")
+            if p.exists() and p.is_dir():
+                candidates.append(f"{letter.upper()}:\\{name_clean}")
+        p = Path(f"/app/{name_clean}")
+        if p.exists() and p.is_dir():
+            candidates.append(str(p))
+
+    return {
+        "name": name,
+        "found": len(candidates) > 0,
+        "path": candidates[0] if candidates else None,
+        "all_matches": candidates,
+    }
 
 
 @router.post("/scan", response_model=Dict[str, Any])
@@ -51,16 +190,16 @@ def scan_cctv_footage(req: ScanRequest):
     Identifies missing time clips, abnormally trimmed videos, and computes SHA-256 hashes.
     """
     global _latest_audit_report
-    target_path = Path(req.directory).resolve()
+    target_path = resolve_directory_path(req.directory)
     if not target_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Path does not exist: {req.directory}",
+            detail=f"Directory does not exist: {req.directory}. Ensure the footage folder exists or is mounted.",
         )
 
     # Protect against raw root directory scan DoS
     root_str = str(target_path).strip().rstrip("/\\")
-    if not root_str or (len(root_str) <= 3 and ":" in root_str):
+    if not root_str or (len(root_str) <= 3 and ":" in root_str) or root_str in ["/", "/d", "/c", "/mnt", "/app"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Scanning raw drive root is restricted for security. Please specify a CCTV folder path.",
@@ -77,6 +216,8 @@ def scan_cctv_footage(req: ScanRequest):
             report = auditor.scan_directory(target_path)
 
         report_dict = asdict(report)
+        # Preserve the friendly path format requested by the user
+        report_dict["root_directory"] = req.directory
 
         with _audit_lock:
             _latest_audit_report = report_dict
@@ -112,16 +253,16 @@ def start_batch_ingest(req: IngestRequest):
     and populates detections, alerts, and demographics into the database.
     """
     global _ingestion_thread
-    target_path = Path(req.directory).resolve()
+    target_path = resolve_directory_path(req.directory)
     if not target_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Path does not exist: {req.directory}",
+            detail=f"Directory does not exist: {req.directory}. Ensure the footage folder exists or is mounted.",
         )
 
     # Protect against raw root directory scan DoS
     root_str = str(target_path).strip().rstrip("/\\")
-    if not root_str or (len(root_str) <= 3 and ":" in root_str):
+    if not root_str or (len(root_str) <= 3 and ":" in root_str) or root_str in ["/", "/d", "/c", "/mnt", "/app"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ingesting raw drive root is restricted for security. Please specify a CCTV folder path.",
@@ -135,14 +276,23 @@ def start_batch_ingest(req: IngestRequest):
         )
 
     # Configure engine
-    engine.sample_fps = max(0.5, req.sample_fps)
+    engine.progress.error = None
+    engine.progress.completed = False
+    engine.sample_fps = max(0.5, float(req.sample_fps))
+    engine.progress.sample_fps = engine.sample_fps
     engine.threshold = req.threshold
     engine.use_gpu = req.use_gpu
+    engine.progress.device = "gpu" if req.use_gpu else "cpu"
+    engine.progress.cpu_cores = os.cpu_count() or 4
+    engine.enable_motion_gating = req.enable_motion_gating
+    engine.max_workers = req.max_workers
+    engine.live_reserve_mb = req.live_reserve_mb
 
     def _worker():
         try:
-            logger.info("Starting background batch ingestion on %s...", req.directory)
-            engine.ingest_directory(target_path)
+            logger.info("Starting background batch ingestion on %s (motion_gating=%s, max_workers=%s)...",
+                        target_path, req.enable_motion_gating, req.max_workers)
+            engine.ingest_directory(target_path, batch_name=req.batch_name)
             logger.info("Background batch ingestion completed.")
         except Exception as exc:
             logger.exception("Background ingestion worker failed: %s", exc)
@@ -152,9 +302,12 @@ def start_batch_ingest(req: IngestRequest):
 
     return {
         "status": "started",
-        "directory": str(target_path),
+        "directory": str(req.directory),
         "sample_fps": req.sample_fps,
         "threshold": req.threshold,
+        "batch_name": req.batch_name,
+        "enable_motion_gating": req.enable_motion_gating,
+        "max_workers": req.max_workers,
     }
 
 
@@ -166,6 +319,24 @@ def get_ingest_status():
     return asdict(p)
 
 
+@router.get("/gpu-status", response_model=Dict[str, Any])
+def get_gpu_status():
+    """Get real-time GPU VRAM or CPU telemetry and recommended parallel worker count."""
+    from facial_recognition.batch_video_ingest import VRAMScheduler
+    vram = VRAMScheduler.get_vram_info()
+    has_gpu = vram.get("total_mb", 0) > 0
+    workers, meta = VRAMScheduler.calculate_safe_workers(camera_count=5, live_reserve_mb=6144 if has_gpu else 0)
+    return {
+        "vram_info": vram,
+        "device": "gpu" if has_gpu else "cpu",
+        "gpu_name": vram.get("device_name", "NVIDIA GPU") if has_gpu else "Host CPU",
+        "cpu_cores": os.cpu_count() or 4,
+        "safe_workers_recommended": workers,
+        "live_reserve_mb": 6144 if has_gpu else 0,
+        "autoscaler_meta": meta,
+    }
+
+
 @router.post("/stop", response_model=Dict[str, Any])
 def stop_batch_ingest():
     """Gracefully cancel the running batch ingestion worker."""
@@ -175,3 +346,41 @@ def stop_batch_ingest():
 
     engine.stop()
     return {"status": "stopping"}
+
+
+@router.get("/batches", response_model=List[ImportBatchResponse])
+def list_import_batches(db: Session = Depends(get_db)):
+    """List all CCTV import batches."""
+    batches = db.query(models.ImportBatch).order_by(models.ImportBatch.created_at.desc()).all()
+    return batches
+
+
+@router.delete("/batches/{batch_id}", response_model=Dict[str, Any])
+def purge_import_batch(batch_id: str, db: Session = Depends(get_db)):
+    """
+    Atomically purge an imported CCTV dataset from the system.
+    Deletes all detections and alerts associated with this batch_id without touching live data.
+    """
+    batch = db.query(models.ImportBatch).filter(models.ImportBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Import batch '{batch_id}' not found.",
+        )
+
+    # Count deleted records
+    deleted_alerts = db.query(models.Alert).filter(models.Alert.batch_id == batch_id).delete(synchronize_session=False)
+    deleted_detections = db.query(models.Detection).filter(models.Detection.batch_id == batch_id).delete(synchronize_session=False)
+
+    db.delete(batch)
+    db.commit()
+
+    logger.info("Purged batch %s: %d detections, %d alerts deleted.", batch_id, deleted_detections, deleted_alerts)
+
+    return {
+        "status": "purged",
+        "batch_id": batch_id,
+        "deleted_detections": deleted_detections,
+        "deleted_alerts": deleted_alerts,
+    }
+

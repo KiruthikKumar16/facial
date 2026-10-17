@@ -92,6 +92,12 @@ class EventPriority(str, enum.Enum):
     low = "low"
 
 
+class DataSource(str, enum.Enum):
+    """Data source classification (live surveillance vs offline archive import)."""
+    live = "live"
+    archive = "archive"
+
+
 class Camera(Base):
     """Camera device metadata and health."""
     __tablename__ = "cameras"
@@ -175,9 +181,14 @@ class Detection(Base):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding_vector": "vector_cosine_ops"},
         ),
+        Index("ix_detections_source_timestamp", "source", "timestamp"),
+        Index("ix_detections_source_camera", "source", "camera_id", "timestamp"),
+        Index("ix_detections_batch_id", "batch_id"),
     )
     
     id = Column(String, primary_key=True, index=True)
+    source = Column(SQLEnum(DataSource), default=DataSource.live, nullable=False, index=True)
+    batch_id = Column(String, nullable=True, index=True)
     event_id = Column(String, unique=True, nullable=True, index=True)  # Idempotency key (deterministic SHA-256)
     unregistered_subject_id = Column(String, ForeignKey("unregistered_subjects.id"), nullable=True, index=True)
     device_id = Column(String, nullable=True, index=True)
@@ -280,8 +291,14 @@ class CameraConfig(Base):
 class Alert(Base):
     """Security alert triggered by detection."""
     __tablename__ = "alerts"
+    __table_args__ = (
+        Index("ix_alerts_source_timestamp", "source", "timestamp"),
+        Index("ix_alerts_batch_id", "batch_id"),
+    )
     
     id = Column(String, primary_key=True, index=True)
+    source = Column(SQLEnum(DataSource), default=DataSource.live, nullable=False, index=True)
+    batch_id = Column(String, nullable=True, index=True)
     detection_id = Column(String, ForeignKey("detections.id"), nullable=True, index=True)
     camera_id = Column(String, ForeignKey("cameras.id"), nullable=False, index=True)
     profile_id = Column(String, ForeignKey("profiles.id"), nullable=True)
@@ -347,9 +364,20 @@ class SequenceAcknowledgment(Base):
     # Composite unique constraint: device + camera pair
     # (implemented via indexes in database)
     
-    __table_args__ = (
-        # Unique constraint per device/camera
-        # Note: PostgreSQL supports unique constraint with multiple columns
-        # SQLite needs to use a different approach
-    )
+class ImportBatch(Base):
+    """Encapsulates an offline CCTV dataset import."""
+    __tablename__ = "import_batches"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    source_directory = Column(String, nullable=False)
+    camera_count = Column(Integer, default=0)
+    total_files = Column(Integer, default=0)
+    total_detections = Column(Integer, default=0)
+    total_alerts = Column(Integer, default=0)
+    footage_start = Column(DateTime, nullable=True)
+    footage_end = Column(DateTime, nullable=True)
+    sample_fps = Column(Float, default=2.0)
+    status = Column(String, default="completed")  # processing, completed, purged
+    created_at = Column(DateTime, default=ist_now)
 

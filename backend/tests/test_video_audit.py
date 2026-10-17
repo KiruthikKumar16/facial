@@ -266,5 +266,114 @@ def test_api_ingest_root_drive_blocked(client, auth_headers):
         assert "restricted" in res.json()["detail"].lower()
 
 
+def test_gold_standard_batch_segregation_and_purge(client, auth_headers):
+    """Verify dual-mode segregation and 1-click dataset purging."""
+    import uuid
+    from datetime import datetime
+    import models
+    from database import SessionLocal
+
+    db = SessionLocal()
+    batch_id = f"batch_poc_{uuid.uuid4().hex[:8]}"
+    cam_id = f"cam_poc_{uuid.uuid4().hex[:6]}"
+
+    try:
+        # Create a test camera to satisfy foreign key
+        cam = models.Camera(
+            id=cam_id,
+            name="POC Test Cam",
+            rtsp_url="rtsp://localhost/live",
+            zone="Test Lab",
+        )
+        db.add(cam)
+
+        # Create an ImportBatch record
+        batch = models.ImportBatch(
+            id=batch_id,
+            name="POC 3-Day Test Dataset",
+            source_directory="D:/test_footage",
+            camera_count=1,
+            total_files=2,
+            total_detections=1,
+            total_alerts=0,
+            status="completed",
+        )
+        db.add(batch)
+
+        # Create 1 archive detection
+        det_archive = models.Detection(
+            id=str(uuid.uuid4()),
+            camera_id=cam_id,
+            source=models.DataSource.archive,
+            batch_id=batch_id,
+            timestamp=datetime.now(),
+            confidence=0.95,
+            age=28,
+            gender="male",
+        )
+        db.add(det_archive)
+
+        # Create 1 live detection
+        det_live = models.Detection(
+            id=str(uuid.uuid4()),
+            camera_id=cam_id,
+            source=models.DataSource.live,
+            batch_id=None,
+            timestamp=datetime.now(),
+            confidence=0.91,
+            age=34,
+            gender="female",
+        )
+        db.add(det_live)
+        db.commit()
+
+        # 1. Verify GET /api/video-audit/batches lists the batch
+        b_res = client.get("/api/video-audit/batches", headers=auth_headers)
+        assert b_res.status_code == 200
+        batches = b_res.json()
+        assert any(b["id"] == batch_id for b in batches)
+
+        # 2. Verify /api/logs with source=live only returns live records
+        live_res = client.get(f"/api/logs?camera_id={cam_id}&source=live", headers=auth_headers)
+        assert live_res.status_code == 200
+        live_logs = live_res.json()
+        assert len(live_logs) == 1
+        assert live_logs[0]["source"] == "live"
+        assert live_logs[0]["batch_id"] is None
+
+        # 3. Verify /api/logs with source=archive only returns archive records
+        archive_res = client.get(f"/api/logs?camera_id={cam_id}&source=archive&batch_id={batch_id}", headers=auth_headers)
+        assert archive_res.status_code == 200
+        archive_logs = archive_res.json()
+        assert len(archive_logs) == 1
+        assert archive_logs[0]["source"] == "archive"
+        assert archive_logs[0]["batch_id"] == batch_id
+
+        # 4. Verify Purge endpoint deletes the archive detection but keeps live intact
+        del_res = client.delete(f"/api/video-audit/batches/{batch_id}", headers=auth_headers)
+        assert del_res.status_code == 200
+        del_data = del_res.json()
+        assert del_data["status"] == "purged"
+        assert del_data["deleted_detections"] >= 1
+
+        # Check database: batch should be gone
+        db.expire_all()
+        assert db.query(models.ImportBatch).filter(models.ImportBatch.id == batch_id).first() is None
+        assert db.query(models.Detection).filter(models.Detection.batch_id == batch_id).first() is None
+
+        # Live detection must still exist!
+        live_remaining = db.query(models.Detection).filter(models.Detection.id == det_live.id).first()
+        assert live_remaining is not None
+        assert live_remaining.source == models.DataSource.live
+
+    finally:
+        # Cleanup live test detection and camera
+        db.query(models.Detection).filter(models.Detection.camera_id == cam_id).delete()
+        db.query(models.ImportBatch).filter(models.ImportBatch.id == batch_id).delete()
+        db.query(models.Camera).filter(models.Camera.id == cam_id).delete()
+        db.commit()
+        db.close()
+
+
 
 

@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
 env/
 venv/
 myenv/
@@ -14,15 +15,20 @@ backend/venv/
 *.db-wal
 *.log
 *.csv
+*.tmp
+*.bak
+*.swp
+test_ci.db
 .DS_Store
 
 # Secrets — never commit real credentials
 .env
-.env.local
-.env.production
-backend/.env
-facial-recognition-dashboard/.env.local
+.env.*
 !.env*.example
+backend/.env*
+!backend/.env*.example
+facial-recognition-dashboard/.env*
+!facial-recognition-dashboard/.env*.example
 
 # Node / Next.js
 node_modules/
@@ -31,13 +37,16 @@ out/
 .vercel/
 tsconfig.tsbuildinfo
 test-results/
+tests/
+coverage/
+.coverage
+htmlcov/
 *-debug.png
 
 # Local face data and enrollments
 known_faces/
 pending/
 
-# gstack (global install)
+# Local tools & worktrees
 .amazonq/rules/gstack.md
-
 .claude/

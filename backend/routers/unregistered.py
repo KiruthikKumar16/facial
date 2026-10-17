@@ -142,16 +142,35 @@ def get_unregistered_subjects(
 
 
 
-@router.patch("/api/unregistered-subjects/{subject_id}", response_model=UnregisteredSubjectResponse)
-@router.post("/api/unregistered-subjects/{subject_id}/rename", response_model=UnregisteredSubjectResponse)
+@router.patch("/api/unregistered-subjects/{subject_id}")
+@router.post("/api/unregistered-subjects/{subject_id}/rename")
 def rename_unregistered_subject(subject_id: str, req: UnregisteredSubjectRenameRequest, db: Session = Depends(get_db)):
-    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
     new_name = req.resolved_name
-    if not subject or not new_name:
-        raise HTTPException(status_code=404 if not subject else 422, detail="Invalid unregistered subject name" if subject else "Unregistered subject not found")
-    subject.display_name = new_name
-    db.commit()
-    return _subject_response(subject, db)
+    if not new_name:
+        raise HTTPException(status_code=422, detail="Name cannot be empty")
+
+    # 1. Try finding active unregistered subject by id or display_name
+    subject = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == subject_id) | (UnregisteredSubject.display_name == subject_id),
+        UnregisteredSubject.status == "active"
+    ).first()
+
+    if subject:
+        subject.display_name = new_name
+        db.commit()
+        return _subject_response(subject, db)
+
+    # 2. Try finding profile by id or name
+    profile = db.query(Profile).filter(
+        (Profile.id == subject_id) | (func.lower(Profile.name) == func.lower(subject_id))
+    ).first()
+    if profile:
+        profile.name = new_name
+        db.commit()
+        db.refresh(profile)
+        return ProfileResponse.model_validate(profile)
+
+    raise HTTPException(status_code=404, detail="Subject or profile not found")
 
 
 
@@ -159,7 +178,10 @@ def rename_unregistered_subject(subject_id: str, req: UnregisteredSubjectRenameR
 
 @router.post("/api/unregistered-subjects/{subject_id}/register", response_model=ProfileResponse)
 def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegisterRequest, db: Session = Depends(get_db)):
-    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    subject = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == subject_id) | (UnregisteredSubject.display_name == subject_id),
+        UnregisteredSubject.status == "active"
+    ).first()
     if not subject:
         raise HTTPException(status_code=404, detail="Unregistered subject not found")
     try:
@@ -179,17 +201,18 @@ def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegis
         raise HTTPException(status_code=422, detail="Profile name cannot be empty")
     db.add(profile)
     emb_vec = subject.representative_embedding
-    if hasattr(emb_vec, "tolist"):
-        emb_vec = emb_vec.tolist()
-    db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=emb_vec))
+    if emb_vec is not None:
+        if hasattr(emb_vec, "tolist"):
+            emb_vec = emb_vec.tolist()
+        db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=emb_vec))
     # Flush so profile exists in PostgreSQL before updating detections with profile_id FK
     db.flush()
 
-    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({
+    db.query(Detection).filter(Detection.unregistered_subject_id == subject.id).update({
         "profile_id": profile.id,
         "status": DetectionStatus.recognized,
         "unregistered_subject_id": None
-    })
+    }, synchronize_session=False)
     subject.status = "registered"
     db.commit()
     db.refresh(profile)
@@ -201,30 +224,53 @@ def register_unregistered_subject(subject_id: str, req: UnregisteredSubjectRegis
 
 @router.post("/api/unregistered-subjects/{subject_id}/assign", response_model=ProfileResponse)
 def assign_unregistered_subject(subject_id: str, req: UnregisteredSubjectAssignRequest, db: Session = Depends(get_db)):
-    subject = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
     target_profile_id = req.resolved_profile_id
-    profile = db.query(Profile).filter(Profile.id == target_profile_id).first()
-    if not subject or not profile:
-        raise HTTPException(status_code=404, detail="Unregistered subject or profile not found")
-    
-    # Also attach the representative embedding to the target profile
-    emb_vec = subject.representative_embedding
-    if hasattr(emb_vec, "tolist"):
-        emb_vec = emb_vec.tolist()
-    db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=emb_vec))
-    profile.embedding_count = (profile.embedding_count or 0) + 1
-    profile.embedding_status = EmbeddingStatus.indexed
-    db.flush()
+    profile = db.query(Profile).filter(
+        (Profile.id == target_profile_id) | (func.lower(Profile.name) == func.lower(target_profile_id))
+    ).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail=f"Target profile '{target_profile_id}' not found")
 
-    db.query(Detection).filter(Detection.unregistered_subject_id == subject_id).update({
-        "profile_id": profile.id,
-        "status": DetectionStatus.recognized,
-        "unregistered_subject_id": None
-    })
-    subject.status = "assigned"
-    db.commit()
-    db.refresh(profile)
-    return ProfileResponse.model_validate(profile)
+    subject = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == subject_id) | (UnregisteredSubject.display_name == subject_id),
+        UnregisteredSubject.status == "active"
+    ).first()
+
+    if subject:
+        # Attach the representative embedding to the target profile
+        emb_vec = subject.representative_embedding
+        if emb_vec is not None:
+            if hasattr(emb_vec, "tolist"):
+                emb_vec = emb_vec.tolist()
+            db.add(Embedding(id=str(uuid.uuid4()), profile_id=profile.id, vector=emb_vec))
+            profile.embedding_count = (profile.embedding_count or 0) + 1
+            profile.embedding_status = EmbeddingStatus.indexed
+        db.flush()
+
+        db.query(Detection).filter(Detection.unregistered_subject_id == subject.id).update({
+            "profile_id": profile.id,
+            "status": DetectionStatus.recognized,
+            "unregistered_subject_id": None
+        }, synchronize_session=False)
+        subject.status = "assigned"
+        db.commit()
+        db.refresh(profile)
+        return ProfileResponse.model_validate(profile)
+
+    # If subject_id is another profile id or name, reassign detections
+    old_profile = db.query(Profile).filter(
+        (Profile.id == subject_id) | (func.lower(Profile.name) == func.lower(subject_id))
+    ).first()
+    if old_profile:
+        db.query(Detection).filter(Detection.profile_id == old_profile.id).update({
+            "profile_id": profile.id,
+            "status": DetectionStatus.recognized
+        }, synchronize_session=False)
+        db.commit()
+        db.refresh(profile)
+        return ProfileResponse.model_validate(profile)
+
+    raise HTTPException(status_code=404, detail="Unregistered subject or source profile not found")
 
 
 
@@ -232,15 +278,64 @@ def assign_unregistered_subject(subject_id: str, req: UnregisteredSubjectAssignR
 
 @router.post("/api/unregistered-subjects/{subject_id}/merge", response_model=UnregisteredSubjectResponse)
 def merge_unregistered_subject(subject_id: str, req: UnregisteredSubjectMergeRequest, db: Session = Depends(get_db)):
-    target = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == subject_id, UnregisteredSubject.status == "active").first()
+    target = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == subject_id) | (UnregisteredSubject.display_name == subject_id),
+        UnregisteredSubject.status == "active"
+    ).first()
     source_id = req.resolved_source_id
-    source = db.query(UnregisteredSubject).filter(UnregisteredSubject.id == source_id, UnregisteredSubject.status == "active").first()
+    source = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == source_id) | (UnregisteredSubject.display_name == source_id),
+        UnregisteredSubject.status == "active"
+    ).first()
     if not target or not source or target.id == source.id:
         raise HTTPException(status_code=404, detail="Unregistered subject not found")
     db.query(Detection).filter(Detection.unregistered_subject_id == source.id).update({"unregistered_subject_id": target.id})
     source.status = "merged"
     db.commit()
     return _subject_response(target, db)
+
+
+
+
+
+@router.post("/api/unregistered-subjects/transfer-sightings")
+def transfer_sightings(req: TransferSightingsRequest, db: Session = Depends(get_db)):
+    if not req.detection_ids:
+        raise HTTPException(status_code=422, detail="detection_ids cannot be empty")
+    target_ref = req.resolved_target_id
+    if not target_ref:
+        raise HTTPException(status_code=422, detail="target_subject_id cannot be empty")
+
+    # Check if target is a Profile
+    profile = db.query(Profile).filter(
+        (Profile.id == target_ref) | (func.lower(Profile.name) == func.lower(target_ref))
+    ).first()
+
+    if profile:
+        count = db.query(Detection).filter(Detection.id.in_(req.detection_ids)).update({
+            "profile_id": profile.id,
+            "unregistered_subject_id": None,
+            "status": DetectionStatus.recognized
+        }, synchronize_session=False)
+        db.commit()
+        return {"status": "success", "transferred_count": count, "target_type": "profile", "target_name": profile.name}
+
+    # Otherwise check if target is an UnregisteredSubject
+    subject = db.query(UnregisteredSubject).filter(
+        (UnregisteredSubject.id == target_ref) | (UnregisteredSubject.display_name == target_ref),
+        UnregisteredSubject.status == "active"
+    ).first()
+
+    if subject:
+        count = db.query(Detection).filter(Detection.id.in_(req.detection_ids)).update({
+            "unregistered_subject_id": subject.id,
+            "profile_id": None,
+            "status": DetectionStatus.unknown
+        }, synchronize_session=False)
+        db.commit()
+        return {"status": "success", "transferred_count": count, "target_type": "unregistered", "target_name": subject.display_name}
+
+    raise HTTPException(status_code=404, detail=f"Target '{target_ref}' not found as a profile or person")
 
 
 

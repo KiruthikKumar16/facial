@@ -156,6 +156,16 @@ class UnregisteredSubjectMergeRequest(BaseModel):
         return (self.source_subject_id or self.sourceId or "").strip()
 
 
+class TransferSightingsRequest(BaseModel):
+    detection_ids: List[str]
+    target_subject_id: Optional[str] = None
+    targetSubjectId: Optional[str] = None
+
+    @property
+    def resolved_target_id(self) -> str:
+        return (self.target_subject_id or self.targetSubjectId or "").strip()
+
+
 # ==================== Detection / FaceLog ====================
 
 class DetectionBase(BaseModel):
@@ -316,6 +326,39 @@ class FaceLogResponse(BaseModel):
     wearing_glasses: bool
     snapshot_tone: str  # Color token for avatar
     face_image: Optional[str] = None
+    source: Optional[str] = "live"
+    batch_id: Optional[str] = None
+    source_video: Optional[str] = None
+    video_elapsed_sec: Optional[float] = None
+
+
+class CameraEpisodeResponse(BaseModel):
+    """Aggregated camera passage and in/out presence episode."""
+    id: str
+    camera_id: str
+    camera_name: str
+    zone: Optional[str] = "General"
+    subject_id: Optional[str] = None
+    subject_name: str
+    role: Optional[str] = "visitor"
+    status: str = "recognized"
+    in_time: str
+    out_time: str
+    dwell_seconds: float
+    detection_count: int
+    peak_confidence: float
+    liveness_score: float = 0.0
+    in_face_image: Optional[str] = None
+    out_face_image: Optional[str] = None
+    direction: str = "Stationary / Present"
+    source: str = "live"
+    batch_id: Optional[str] = None
+    snapshot_tone: str = "cyan"
+    is_active: bool = False
+    next_camera_id: Optional[str] = None
+    next_camera_name: Optional[str] = None
+    transit_seconds: Optional[float] = None
+    detection_ids: List[str] = []
 
 
 # ==================== Alerts ====================
@@ -334,8 +377,32 @@ class AlertResponse(BaseModel):
     confidence: float
     acknowledged: bool
     snapshot_tone: str
+    source: Optional[str] = "live"
+    batch_id: Optional[str] = None
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class ImportBatchResponse(BaseModel):
+    id: str
+    name: str
+    source_directory: str
+    camera_count: int
+    total_files: int
+    total_detections: int
+    total_alerts: int
+    footage_start: Optional[datetime] = None
+    footage_end: Optional[datetime] = None
+    sample_fps: float
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer('footage_start', 'footage_end', 'created_at', when_used='always')
+    def serialize_ist_batch_dates(self, v: Optional[datetime]):
+        return to_ist_iso(v) if v is not None else None
+
 
 
 # ==================== KPIs ====================

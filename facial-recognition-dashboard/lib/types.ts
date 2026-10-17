@@ -59,6 +59,10 @@ export interface FaceLog {
   /** Colour token used to render the synthetic face-crop swatch. */
   snapshotTone: string
   faceImage?: string | null
+  source?: 'live' | 'archive'
+  batchId?: string | null
+  sourceVideo?: string | null
+  videoElapsedSec?: number | null
 }
 
 export interface Alert {
@@ -75,6 +79,51 @@ export interface Alert {
   confidence: number
   acknowledged: boolean
   snapshotTone: string
+  source?: 'live' | 'archive'
+  batchId?: string | null
+}
+
+export interface CameraEpisode {
+  id: string
+  cameraId: string
+  cameraName: string
+  zone?: string
+  subjectId?: string | null
+  subjectName: string
+  role?: ProfileRole | string
+  status: DetectionStatus
+  inTime: string
+  outTime: string
+  dwellSeconds: number
+  detectionCount: number
+  peakConfidence: number
+  livenessScore: number
+  inFaceImage?: string | null
+  outFaceImage?: string | null
+  direction: string
+  source: 'live' | 'archive'
+  batchId?: string | null
+  snapshotTone: string
+  isActive?: boolean
+  nextCameraId?: string | null
+  nextCameraName?: string | null
+  transitSeconds?: number | null
+  detectionIds: string[]
+}
+
+export interface ImportBatch {
+  id: string
+  name: string
+  sourceDirectory: string
+  cameraCount: number
+  totalFiles: number
+  totalDetections: number
+  totalAlerts: number
+  footageStart?: string | null
+  footageEnd?: string | null
+  sampleFps: number
+  status: string
+  createdAt: string
 }
 
 export interface UnknownCapture {

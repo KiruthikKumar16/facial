@@ -12,6 +12,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  security-audit:
+    name: Security & Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
   backend-lint-and-test:
     name: Backend CI (Python 3.11)
     runs-on: ubuntu-latest
@@ -43,6 +57,7 @@ jobs:
 
       - name: Run Backend Unit Tests
         env:
+          PYTHONPATH: "backend:."
           DATABASE_URL: "sqlite:///./test_ci.db"
           SECRET_KEY: "ci-test-secret-key-1234567890"
           EDGE_API_KEY: "ci-test-edge-api-key"
@@ -115,12 +130,12 @@ jobs:
 
   deploy:
     name: Deploy & Cloud Status
-    needs: [backend-lint-and-test, frontend-lint-and-build, docker-compose-validate]
+    needs: [security-audit, backend-lint-and-test, frontend-lint-and-build, docker-compose-validate]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Render Deploy Webhook (if configured)
-        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        if: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
@@ -129,7 +144,7 @@ jobs:
           echo "Render deploy webhook triggered."
 
       - name: Trigger Vercel Deploy Webhook (if configured)
-        if: env.VERCEL_DEPLOY_HOOK_URL != ''
+        if: ${{ secrets.VERCEL_DEPLOY_HOOK_URL != '' }}
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
@@ -141,12 +156,13 @@ jobs:
         run: |
           echo "### 🚀 CI/CD Pipeline Passed Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Security Scan**: Verified zero leaked secrets via TruffleHog." >> $GITHUB_STEP_SUMMARY
           echo "- **Backend CI**: Python syntax, flake8, and pytest passed." >> $GITHUB_STEP_SUMMARY
           echo "- **Frontend CI**: TypeScript (\`tsc\`), ESLint, and Next.js Turbopack build passed." >> $GITHUB_STEP_SUMMARY
           echo "- **Docker CI**: Backend and Frontend Docker containers built and validated." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Live Deployment Targets:" >> $GITHUB_STEP_SUMMARY
-          echo "- **Backend (Render)**: Auto-deployed on push to \`main\` (or triggered via webhook)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Frontend (Vercel)**: Auto-deployed on push to \`main\` (or triggered via webhook)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend (Render)**: Auto-deployed on push to \`main\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend (Vercel)**: Auto-deployed on push to \`main\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Database (Supabase)**: Cloud PostgreSQL with pgvector" >> $GITHUB_STEP_SUMMARY
           echo "- **Edge Detection**: Local CV pipeline synced with cloud backend" >> $GITHUB_STEP_SUMMARY

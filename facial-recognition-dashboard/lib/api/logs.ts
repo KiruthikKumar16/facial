@@ -1,13 +1,71 @@
 import { apiUrl, authFetch, handleResponse } from './config';
-import type { FaceLog, Alert, UnknownCapture, UnregisteredSubject, ProfileRole } from '../types';
+import type { FaceLog, Alert, UnknownCapture, UnregisteredSubject, ProfileRole, CameraEpisode } from '../types';
 
 import { adaptFaceLog, adaptAlert, adaptUnknownCapture, adaptUnregisteredSubject } from './adapters';
+
+export const fetchCameraEpisodes = async (
+  limit: number = 100,
+  source?: string,
+  batchId?: string,
+  cameraId?: string,
+  profileId?: string,
+  gapThreshold: number = 45.0,
+  minDwell: number = 0.0,
+  minConfidence: number = 0.0,
+): Promise<CameraEpisode[]> => {
+  let qs = `?limit=${encodeURIComponent(String(limit))}&gap_threshold=${encodeURIComponent(String(gapThreshold))}`
+  if (source) qs += `&source=${encodeURIComponent(source)}`
+  if (batchId) qs += `&batch_id=${encodeURIComponent(batchId)}`
+  if (cameraId) qs += `&camera_id=${encodeURIComponent(cameraId)}`
+  if (profileId) qs += `&profile_id=${encodeURIComponent(profileId)}`
+  if (minDwell > 0) qs += `&min_dwell=${encodeURIComponent(String(minDwell))}`
+  if (minConfidence > 0) qs += `&min_confidence=${encodeURIComponent(String(minConfidence))}`
+  const response = await authFetch(`/api/logs/episodes${qs}`)
+  const raw = await handleResponse<any>(response)
+  try {
+    const arr = Array.isArray(raw) ? raw : raw?.episodes ?? []
+    return arr.map((item: any) => ({
+      id: String(item.id),
+      cameraId: String(item.camera_id),
+      cameraName: String(item.camera_name),
+      zone: item.zone ? String(item.zone) : undefined,
+      subjectId: item.subject_id ? String(item.subject_id) : null,
+      subjectName: String(item.subject_name || 'Unidentified'),
+      role: item.role ? String(item.role) : 'visitor',
+      status: (item.status as any) || 'unknown',
+      inTime: String(item.in_time),
+      outTime: String(item.out_time),
+      dwellSeconds: Number(item.dwell_seconds || 0),
+      detectionCount: Number(item.detection_count || 1),
+      peakConfidence: Number(item.peak_confidence || 0),
+      livenessScore: Number(item.liveness_score || 0),
+      inFaceImage: item.in_face_image ? String(item.in_face_image) : null,
+      outFaceImage: item.out_face_image ? String(item.out_face_image) : null,
+      direction: String(item.direction || 'Stationary / Present'),
+      source: (item.source as any) || 'live',
+      batchId: item.batch_id ? String(item.batch_id) : null,
+      snapshotTone: String(item.snapshot_tone || 'cyan'),
+      isActive: Boolean(item.is_active),
+      nextCameraId: item.next_camera_id ? String(item.next_camera_id) : null,
+      nextCameraName: item.next_camera_name ? String(item.next_camera_name) : null,
+      transitSeconds: item.transit_seconds != null ? Number(item.transit_seconds) : null,
+      detectionIds: Array.isArray(item.detection_ids) ? item.detection_ids.map(String) : [],
+    }))
+  } catch (e) {
+    console.error('fetchCameraEpisodes failed:', e)
+    return []
+  }
+}
 
 export const fetchFaceLogs = async (
   limit: number = 100,
   offset: number = 0,
+  source?: string,
+  batchId?: string,
 ): Promise<FaceLog[]> => {
-  const qs = `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`
+  let qs = `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`
+  if (source) qs += `&source=${encodeURIComponent(source)}`
+  if (batchId) qs += `&batch_id=${encodeURIComponent(batchId)}`
   const response = await authFetch(`/api/logs${qs}`)
   const raw = await handleResponse<any>(response)
   try {
@@ -28,8 +86,14 @@ export const fetchFaceLogs = async (
   }
 }
 
-export const fetchAlerts = async (limit: number = 50): Promise<Alert[]> => {
-  const qs = `?limit=${encodeURIComponent(String(limit))}`
+export const fetchAlerts = async (
+  limit: number = 50,
+  source?: string,
+  batchId?: string,
+): Promise<Alert[]> => {
+  let qs = `?limit=${encodeURIComponent(String(limit))}`
+  if (source) qs += `&source=${encodeURIComponent(source)}`
+  if (batchId) qs += `&batch_id=${encodeURIComponent(batchId)}`
   const response = await authFetch(`/api/alerts${qs}`)
   const raw = await handleResponse<any>(response)
   try {
@@ -164,3 +228,19 @@ export const renameUnregisteredSubject = async (id: string, name: string): Promi
   })
   await handleResponse<any>(response)
 }
+
+export const transferSightings = async (
+  detectionIds: string[],
+  targetSubjectId: string,
+): Promise<{ status: string; transferred_count: number; target_type: string; target_name: string }> => {
+  const response = await authFetch('/api/unregistered-subjects/transfer-sightings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      detection_ids: detectionIds,
+      target_subject_id: targetSubjectId,
+    }),
+  })
+  return handleResponse<{ status: string; transferred_count: number; target_type: string; target_name: string }>(response)
+}
+

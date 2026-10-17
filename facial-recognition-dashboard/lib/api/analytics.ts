@@ -3,8 +3,12 @@ import type { SystemKpis, FootfallBucket, SubjectTrajectory, MovementNetwork, Du
 
 import { adaptKpis, adaptFootfallBucket, adaptSubjectTrajectory, adaptDuplicateCandidate, adaptDemographicSlice, adaptAttendanceRecord } from './adapters';
 
-export const fetchKpis = async (): Promise<SystemKpis> => {
-  const response = await authFetch('/api/kpis')
+export const fetchKpis = async (source?: string, batchId?: string): Promise<SystemKpis> => {
+  const params = new URLSearchParams()
+  if (source) params.append('source', source)
+  if (batchId) params.append('batch_id', batchId)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const response = await authFetch(`/api/kpis${qs}`)
   const raw = await handleResponse<any>(response)
   try {
     return adaptKpis(raw)
@@ -58,7 +62,9 @@ export const fetchTrajectory = async (
 export const fetchFootfall = async (
   days?: number,
   date_from?: Date,
-  date_to?: Date
+  date_to?: Date,
+  source?: string,
+  batchId?: string,
 ): Promise<FootfallBucket[]> => {
   const params = new URLSearchParams()
 
@@ -72,6 +78,14 @@ export const fetchFootfall = async (
 
   if (date_to !== undefined) {
     params.append('date_to', date_to.toISOString())
+  }
+
+  if (source) {
+    params.append('source', source)
+  }
+
+  if (batchId) {
+    params.append('batch_id', batchId)
   }
 
   const qs = params.toString() ? `?${params.toString()}` : ''
@@ -95,10 +109,12 @@ export const fetchFootfall = async (
   }
 }
 
-export const fetchGenderDistribution = async (dateFrom?: string, dateTo?: string): Promise<DemographicSlice[]> => {
+export const fetchGenderDistribution = async (dateFrom?: string, dateTo?: string, source?: string, batchId?: string): Promise<DemographicSlice[]> => {
   const params = new URLSearchParams()
   if (dateFrom) params.append('date_from', dateFrom)
   if (dateTo) params.append('date_to', dateTo)
+  if (source) params.append('source', source)
+  if (batchId) params.append('batch_id', batchId)
   const query = params.toString() ? `?${params.toString()}` : ''
   const response = await authFetch(`/api/analytics/gender-distribution${query}`)
   const raw = await handleResponse<any>(response)
@@ -123,7 +139,9 @@ export const fetchGenderDistribution = async (dateFrom?: string, dateTo?: string
 export const fetchAttendance = async (
   days?: number,
   date_from?: Date,
-  date_to?: Date
+  date_to?: Date,
+  source?: string,
+  batchId?: string,
 ): Promise<AttendanceRecord[]> => {
   const params = new URLSearchParams()
   if (days !== undefined) {
@@ -134,6 +152,12 @@ export const fetchAttendance = async (
   }
   if (date_to !== undefined) {
     params.append('date_to', date_to.toISOString())
+  }
+  if (source) {
+    params.append('source', source)
+  }
+  if (batchId) {
+    params.append('batch_id', batchId)
   }
   
   const qs = params.toString() ? `?${params.toString()}` : ''

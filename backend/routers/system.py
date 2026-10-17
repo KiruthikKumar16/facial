@@ -34,37 +34,51 @@ def health_check():
 # ==================== KPI Endpoints ====================
 
 @router.get("/api/kpis", response_model=SystemKpisResponse)
-def get_kpis(db: Session = Depends(get_db)):
-    """Get system KPIs."""
+def get_kpis(
+    source: Optional[str] = Query(None, description="Filter by data source: 'live' or 'archive'"),
+    batch_id: Optional[str] = Query(None, description="Filter by specific archive batch ID"),
+    db: Session = Depends(get_db)
+):
+    """Get system KPIs, optionally filtered by source or batch."""
     today = datetime.now(IST).date()
     
-    total_detections = db.query(func.count(Detection.id)).scalar() or 0
-    unique_profiles = db.query(func.count(func.distinct(Detection.profile_id))).scalar() or 0
+    det_q = db.query(Detection)
+    alert_q = db.query(Alert)
+    
+    if source:
+        det_q = det_q.filter(Detection.source == source)
+        alert_q = alert_q.filter(Alert.source == source)
+    if batch_id:
+        det_q = det_q.filter(Detection.batch_id == batch_id)
+        alert_q = alert_q.filter(Alert.batch_id == batch_id)
+        
+    total_detections = det_q.with_entities(func.count(Detection.id)).scalar() or 0
+    unique_profiles = det_q.with_entities(func.count(func.distinct(Detection.profile_id))).scalar() or 0
     total_profiles = db.query(func.count(Profile.id)).scalar() or 0
     cameras_online = db.query(func.count(Camera.id)).filter(
         Camera.status == CameraStatus.online
     ).scalar() or 0
-    critical_alerts = db.query(func.count(Alert.id)).filter(
+    critical_alerts = alert_q.filter(
         Alert.severity == "critical",
         Alert.acknowledged == False
-    ).scalar() or 0
+    ).with_entities(func.count(Alert.id)).scalar() or 0
     
     # Today's stats evaluated against local day start
     today_start_ist = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
     
-    recognitions_today = db.query(func.count(Detection.id)).filter(
+    recognitions_today = det_q.filter(
         Detection.timestamp >= today_start_ist,
         Detection.status == DetectionStatus.recognized
-    ).scalar() or 0
-    unknowns_today = db.query(func.count(Detection.id)).filter(
+    ).with_entities(func.count(Detection.id)).scalar() or 0
+    unknowns_today = det_q.filter(
         Detection.timestamp >= today_start_ist,
         Detection.status == DetectionStatus.unknown
-    ).scalar() or 0
+    ).with_entities(func.count(Detection.id)).scalar() or 0
     
     # Average confidence
-    avg_confidence = db.query(func.avg(Detection.confidence)).filter(
+    avg_confidence = det_q.filter(
         Detection.confidence > 0
-    ).scalar() or 0.0
+    ).with_entities(func.avg(Detection.confidence)).scalar() or 0.0
     
     return SystemKpisResponse(
         total_detections=total_detections,
