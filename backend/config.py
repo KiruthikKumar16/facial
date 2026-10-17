@@ -121,7 +121,12 @@ def _parse_float(v: str, default: float) -> float:
 
 def _split_origins(v: str) -> list[str]:
     if not v:
-        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+        return [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "https://*.vercel.app",
+            "https://*.jarvislabs.run",
+        ]
     if v.startswith("["):
         try:
             parsed = json.loads(v)

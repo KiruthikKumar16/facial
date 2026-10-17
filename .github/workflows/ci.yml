@@ -64,6 +64,7 @@ jobs:
           EDGE_API_KEY: "ci-test-edge-api-key"
           DEBUG: "false"
           ENABLE_FORENSIC_SEARCH: "false"
+          CORS_ORIGINS: "http://localhost:3000,https://*.vercel.app"
         run: |
           pytest backend/tests -v
 
