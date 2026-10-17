@@ -190,19 +190,26 @@ def scan_cctv_footage(req: ScanRequest):
     Identifies missing time clips, abnormally trimmed videos, and computes SHA-256 hashes.
     """
     global _latest_audit_report
-    target_path = resolve_directory_path(req.directory)
-    if not target_path.exists():
+    # Protect against raw root directory scan DoS
+    raw_str = (req.directory or "").strip().rstrip("/\\")
+    if not raw_str or (len(raw_str) <= 3 and ":" in raw_str) or raw_str in ["/", "/d", "/c", "/mnt", "/app"]:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Directory does not exist: {req.directory}. Ensure the footage folder exists or is mounted.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Scanning raw drive root is restricted for security. Please specify a CCTV folder path.",
         )
 
-    # Protect against raw root directory scan DoS
+    target_path = resolve_directory_path(req.directory)
     root_str = str(target_path).strip().rstrip("/\\")
     if not root_str or (len(root_str) <= 3 and ":" in root_str) or root_str in ["/", "/d", "/c", "/mnt", "/app"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Scanning raw drive root is restricted for security. Please specify a CCTV folder path.",
+        )
+
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Directory does not exist: {req.directory}. Ensure the footage folder exists or is mounted.",
         )
 
     try:
@@ -253,19 +260,26 @@ def start_batch_ingest(req: IngestRequest):
     and populates detections, alerts, and demographics into the database.
     """
     global _ingestion_thread
-    target_path = resolve_directory_path(req.directory)
-    if not target_path.exists():
+    # Protect against raw root directory scan DoS
+    raw_str = (req.directory or "").strip().rstrip("/\\")
+    if not raw_str or (len(raw_str) <= 3 and ":" in raw_str) or raw_str in ["/", "/d", "/c", "/mnt", "/app"]:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Directory does not exist: {req.directory}. Ensure the footage folder exists or is mounted.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ingesting raw drive root is restricted for security. Please specify a CCTV folder path.",
         )
 
-    # Protect against raw root directory scan DoS
+    target_path = resolve_directory_path(req.directory)
     root_str = str(target_path).strip().rstrip("/\\")
     if not root_str or (len(root_str) <= 3 and ":" in root_str) or root_str in ["/", "/d", "/c", "/mnt", "/app"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ingesting raw drive root is restricted for security. Please specify a CCTV folder path.",
+        )
+
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Directory does not exist: {req.directory}. Ensure the footage folder exists or is mounted.",
         )
 
     engine = get_global_ingest_engine()

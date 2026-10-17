@@ -183,7 +183,6 @@ class Detection(Base):
         ),
         Index("ix_detections_source_timestamp", "source", "timestamp"),
         Index("ix_detections_source_camera", "source", "camera_id", "timestamp"),
-        Index("ix_detections_batch_id", "batch_id"),
     )
     
     id = Column(String, primary_key=True, index=True)
@@ -293,7 +292,6 @@ class Alert(Base):
     __tablename__ = "alerts"
     __table_args__ = (
         Index("ix_alerts_source_timestamp", "source", "timestamp"),
-        Index("ix_alerts_batch_id", "batch_id"),
     )
     
     id = Column(String, primary_key=True, index=True)

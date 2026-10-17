@@ -37,7 +37,7 @@ out/
 .vercel/
 tsconfig.tsbuildinfo
 test-results/
-tests/
+/facial-recognition-dashboard/tests/
 coverage/
 .coverage
 htmlcov/
