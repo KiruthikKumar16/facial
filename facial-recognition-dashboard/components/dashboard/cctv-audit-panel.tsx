@@ -17,7 +17,6 @@ import {
   type IngestionProgress,
   type GpuStatusResponse,
   type BrowseDirectoryResponse,
-  type DirectoryItem,
 } from '@/lib/api';
 import { ImportBatch } from '@/lib/types';
 import { useDashboardMode } from '@/lib/mode-context';
@@ -26,7 +25,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { SectionHeading } from '@/components/dashboard/shared';
 import { cn } from '@/lib/utils';
 import {
   ShieldAlert,
@@ -34,7 +32,6 @@ import {
   HardDrive,
   Play,
   Square,
-  Search,
   FileCheck2,
   AlertTriangle,
   Clock,
@@ -49,11 +46,7 @@ import {
   ArrowUp,
   Film,
   Trash2,
-  Layers,
-  Filter,
   Database,
-  Calendar,
-  Check,
   X,
   Zap,
   Cpu,

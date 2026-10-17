@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import {
-  FileText,
   Printer,
   Download,
   ArrowLeft,
@@ -13,9 +12,7 @@ import {
   AlertTriangle,
   Fingerprint,
   Clock,
-  UserCheck,
   Zap,
-  ArrowRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
